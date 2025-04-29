@@ -16,6 +16,8 @@ async def detect_route(file: UploadFile = File(...)):
     # Extract boxes and counts
     detections = []
     for r in results:
+        if int(box.cls[0]) != 2:
+            continue
         for box in r.boxes:
             x1, y1, x2, y2 = box.xyxy[0].tolist()
             conf = float(box.conf[0])
@@ -46,8 +48,12 @@ async def webcam_feed():
             results = detect(frame)
             for r in results:
                 for box in r.boxes:
+                    if int(box.cls[0]) != 2:
+                        continue
                     x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                    conf = f"{float(box.conf[0]):.2f}"
+                    cv2.putText(frame, conf, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 255, 0), 2)
             ret, buffer = cv2.imencode('.jpg', frame)
             frame_bytes = buffer.tobytes()
             yield (b'--frame\r\n'
