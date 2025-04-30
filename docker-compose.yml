@@ -1,11 +1,32 @@
-version: '3.8'
 services:
   backend:
     build: ./backend
     ports:
       - "8000:8000"
     volumes:
-      - ./backend:/app
+      - ./backend/app/src:/app/app/src
+      - ./backend/app/alembic/versions:/app/app/alembic/versions
       - ./sample_videos:/app/sample_videos
+    depends_on:
+      - db
 
-      
+  db:
+    image: timescale/timescaledb:latest-pg14
+    environment:
+      POSTGRES_USER: parking_user
+      POSTGRES_PASSWORD: parking_pass
+      POSTGRES_DB: parking
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+  migrations:
+    build: ./backend
+    command: ["alembic", "upgrade", "head"]
+    volumes:
+      - ./backend:/app
+    depends_on:
+      - db
+
+volumes:
+  db_data:
