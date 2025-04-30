@@ -1,15 +1,4 @@
 services:
-  backend:
-    build: ./backend
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./backend/app/src:/app/app/src
-      - ./backend/app/alembic/versions:/app/app/alembic/versions
-      - ./sample_videos:/app/sample_videos
-    depends_on:
-      - db
-
   db:
     image: timescale/timescaledb:latest-pg14
     environment:
@@ -20,11 +9,16 @@ services:
       - "5432:5432"
     volumes:
       - db_data:/var/lib/postgresql/data
-  migrations:
+
+  backend:
     build: ./backend
-    command: ["alembic", "upgrade", "head"]
+    ports:
+      - "8000:8000"
     volumes:
+      # Mount the entire backend directory so code, Alembic scripts, and configs all sync correctly
       - ./backend:/app
+      # Mount sample videos if you need to test with video files
+      - ./sample_videos:/app/sample_videos
     depends_on:
       - db
 
