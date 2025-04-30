@@ -1,0 +1,28 @@
+services:
+  db:
+    image: timescale/timescaledb:latest-pg14
+    environment:
+      POSTGRES_USER: parking_user
+      POSTGRES_PASSWORD: parking_pass
+      POSTGRES_DB: parking
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Mount the entire backend directory so code, Alembic scripts, and configs all sync correctly
+      - ./backend:/app
+      # Mount sample videos if you need to test with video files
+      - ./sample_videos:/app/sample_videos
+    depends_on:
+      - db
+    devices:
+      - "/dev/video0:/dev/video0"
+
+volumes:
+  db_data:

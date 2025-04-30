@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+ultralytics
+opencv-python
+numpy
+python-multipart
+sqlmodel
+alembic
+psycopg2-binary
+requests
