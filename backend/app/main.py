@@ -1,73 +1,135 @@
-from fastapi import FastAPI, File, UploadFile, Depends
-from fastapi.responses import StreamingResponse
-from sqlmodel import Session
-from .db import get_session
-from .schemas import Occupancy
-from inference.cv_model import detect
-from app.video import make_frames
-import numpy as np
+import json
 import cv2
+import anyio
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+
+from inference.cv_model import detect
+from .spot_logic import get_spot_states, detect_vacancies, SPOTS
+from .db import engine, Base
+
+# Initialize database tables
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-@app.post('/detect')
-async def detect_route(file: UploadFile = File(...)):
-    data = await file.read()
-    nparr = np.frombuffer(data, np.uint8)
-    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    results = detect(frame)
-    # Extract boxes and counts
-    detections = []
-    for r in results:
-        if int(box.cls[0]) != 2:
-            continue
-        for box in r.boxes:
-            x1, y1, x2, y2 = box.xyxy[0].tolist()
-            conf = float(box.conf[0])
-            cls = int(box.cls[0])
-            detections.append({"bbox": [x1, y1, x2, y2], "conf": conf, "class": cls})
-    return {"count": len(detections), "detections": detections}
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: list[WebSocket] = []
 
-@app.get('/video_feed')
-async def video_feed():
-    async def streamer():
-        for frame in make_frames('sample_videos/sample.mp4'):
-            results = detect(frame)
-            for r in results:
-                for box in r.boxes:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in list(self.active_connections):
+            try:
+                await connection.send_text(message)
+            except Exception:
+                self.disconnect(connection)
+
+manager = ConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+
+
+def broadcast_vacancy(event: dict):
+    """
+    Send a vacancy event to all connected WebSocket clients from any thread.
+    """
+    anyio.from_thread.run(manager.broadcast, json.dumps(event))
+
+
+
+def frame_generator():
+    cap = cv2.VideoCapture(0)
+    prev_states = {spot_id: False for spot_id in SPOTS}
+    # Only consider these COCO classes as vehicles
+    vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"}
+
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Draw ROI outlines
+            for spot_id, (sx, sy, sw, sh) in SPOTS.items():
+                x1, y1 = int(sx), int(sy)
+                x2, y2 = int(sx + sw), int(sy + sh)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+                cv2.putText(frame, f"Spot {spot_id}", (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+            # Perform detection
+            detections = detect(frame)
+            # Filter to only vehicle detections for state logic
+            vehicle_detections = []
+            for det in detections:
+                boxes = det.boxes.xyxy.tolist()
+                classes = det.boxes.cls.tolist()
+                # Build new Result-like object with only vehicle boxes
+                filtered_indices = [i for i, cls in enumerate(classes) if det.names[cls] in vehicle_classes]
+                if not filtered_indices:
+                    continue
+                # Create a lightweight namespace for filtered dets
+                class FilteredDet:
+                    def __init__(self, boxes, cls_indices, names):
+                        self.boxes = type("B", (), {"xyxy": boxes, "cls": cls_indices})
+                        self.names = names
+                filt_boxes = [boxes[i] for i in filtered_indices]
+                filt_cls = [classes[i] for i in filtered_indices]
+                vehicle_detections.append(FilteredDet(filt_boxes, filt_cls, det.names))
+
+            # Update spot states and detect vacancies using only vehicles
+            curr_states = get_spot_states(vehicle_detections)
+            detect_vacancies(prev_states, curr_states)
+            prev_states = curr_states
+
+            # Draw only vehicle detections
+            for det in vehicle_detections:
+                boxes = det.boxes.xyxy
+                cls_list = det.boxes.cls
+                for box, cls in zip(boxes, cls_list):
+                    x1, y1, x2, y2 = map(int, box)
+                    label = det.names[cls]
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
+                    cv2.putText(frame, label, (x1, y1 - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+            # Encode as JPEG
+            success, jpeg = cv2.imencode('.jpg', frame)
+            if not success:
+                continue
             yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    return StreamingResponse(streamer(), media_type='multipart/x-mixed-replace; boundary=frame')
+                   b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+    finally:
+        cap.release()
 
-@app.get('/webcam_feed')
-
-async def webcam_feed(session: Session = Depends(get_session)):
-    async def gen():
-        for frame in make_frames(0):
-            results = detect(frame)
-            count = 0
-            for r in results:
-                for box in r.boxes:
-                    if int(box.cls[0]) != 2:
-                        continue
-
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    conf = f"{float(box.conf[0]):.2f}"
-                    cv2.putText(frame, conf, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 3, (0, 255, 0), 2)
-                    count += 1
-
-            entry = Occupancy(vehicle_count = count, camera_id = "main")
-            session.add(entry)
-            session.commit()
-            session.refresh(entry)
-            
-            ret, buffer = cv2.imencode('.jpg', frame)
-            frame_bytes = buffer.tobytes()
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-    return StreamingResponse(gen(), media_type='multipart/x-mixed-replace; boundary=frame')
+@app.get("/webcam_feed")
+def webcam_feed():
+    """
+    MJPEG stream showing ROIs, vehicle detections, and vacancy detection.
+    """
+    return StreamingResponse(
+        frame_generator(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )

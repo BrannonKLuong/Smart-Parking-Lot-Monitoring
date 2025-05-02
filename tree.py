@@ -16,6 +16,6 @@ def print_tree(path, prefix=''):
             print_tree(full, prefix + extension)
 
 if __name__ == '__main__':
-    root = r'C:\Users\Brannon Luong\Desktop\Smart Parking-Lot Monitoring'
+    root = r'C:\Users\Brannon Luong\Desktop\Smart-Parking-Lot-Monitoring-main'
     print(root)
     print_tree(root)
