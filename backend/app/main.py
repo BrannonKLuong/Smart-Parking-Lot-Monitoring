@@ -1,13 +1,18 @@
 import json
 import cv2
 import anyio
+from datetime import datetime, timedelta
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from inference.cv_model import detect
 from .spot_logic import get_spot_states, detect_vacancies, SPOTS
-from .db import engine, Base
+from .db import engine, Base, SessionLocal, VacancyEvent
+
+import io
+from contextlib import redirect_stdout, redirect_stderr
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
@@ -57,12 +62,18 @@ def broadcast_vacancy(event: dict):
     """
     anyio.from_thread.run(manager.broadcast, json.dumps(event))
 
-
-
 def frame_generator():
     cap = cv2.VideoCapture(0)
-    prev_states = {spot_id: False for spot_id in SPOTS}
-    # Only consider these COCO classes as vehicles
+
+    # Track previous state and vacancy timers
+    prev_states   = {spot_id: False for spot_id in SPOTS}
+    empty_start   = {spot_id: None  for spot_id in SPOTS}
+    notified      = {spot_id: False for spot_id in SPOTS}
+
+    # Minimum time a spot must remain empty before we notify
+    VACANCY_DELAY = timedelta(seconds=5)
+
+    # Only these classes count as vehicles
     vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"}
 
     try:
@@ -71,58 +82,103 @@ def frame_generator():
             if not ret:
                 break
 
-            # Draw ROI outlines
+            # 1) Draw your ROIs
             for spot_id, (sx, sy, sw, sh) in SPOTS.items():
                 x1, y1 = int(sx), int(sy)
                 x2, y2 = int(sx + sw), int(sy + sh)
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.putText(frame, f"Spot {spot_id}", (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                cv2.putText(frame, f"Spot {spot_id}",
+                            (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7, (255, 0, 0), 2)
 
-            # Perform detection
-            detections = detect(frame)
-            # Filter to only vehicle detections for state logic
-            vehicle_detections = []
-            for det in detections:
-                boxes = det.boxes.xyxy.tolist()
-                classes = det.boxes.cls.tolist()
-                # Build new Result-like object with only vehicle boxes
-                filtered_indices = [i for i, cls in enumerate(classes) if det.names[cls] in vehicle_classes]
-                if not filtered_indices:
-                    continue
-                # Create a lightweight namespace for filtered dets
-                class FilteredDet:
-                    def __init__(self, boxes, cls_indices, names):
-                        self.boxes = type("B", (), {"xyxy": boxes, "cls": cls_indices})
-                        self.names = names
-                filt_boxes = [boxes[i] for i in filtered_indices]
-                filt_cls = [classes[i] for i in filtered_indices]
-                vehicle_detections.append(FilteredDet(filt_boxes, filt_cls, det.names))
+            # 2) Run YOLO and filter for vehicle boxes
+            results = detect(frame)
+            vehicle_boxes = []
+            for res in results:
+                boxes   = res.boxes.xyxy.tolist()
+                classes = res.boxes.cls.tolist()
+                for i, cls_idx in enumerate(classes):
+                    if res.names[cls_idx] in vehicle_classes:
+                        vehicle_boxes.append(boxes[i])
 
-            # Update spot states and detect vacancies using only vehicles
-            curr_states = get_spot_states(vehicle_detections)
-            detect_vacancies(prev_states, curr_states)
-            prev_states = curr_states
+            # 3) Compute occupied/empty per spot by checking box centers
+            curr_states = {}
+            for spot_id, (sx, sy, sw, sh) in SPOTS.items():
+                x1, y1 = sx, sy
+                x2, y2 = sx + sw, sy + sh
+                occupied = False
+                for bx1, by1, bx2, by2 in vehicle_boxes:
+                    cx, cy = (bx1 + bx2) / 2, (by1 + by2) / 2
+                    if x1 <= cx <= x2 and y1 <= cy <= y2:
+                        occupied = True
+                        break
+                curr_states[spot_id] = occupied
 
-            # Draw only vehicle detections
-            for det in vehicle_detections:
-                boxes = det.boxes.xyxy
-                cls_list = det.boxes.cls
-                for box, cls in zip(boxes, cls_list):
-                    x1, y1, x2, y2 = map(int, box)
-                    label = det.names[cls]
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, label, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            # 4) Hysteresis: only fire once after VACANCY_DELAY
+            now = datetime.utcnow()
+            for spot_id in SPOTS:
+                was_occ = prev_states[spot_id]
+                is_occ  = curr_states[spot_id]
 
-            # Encode as JPEG
+                # just turned from occupied → empty: start timer
+                if was_occ and not is_occ:
+                    empty_start[spot_id] = now
+                    notified[spot_id]    = False
+
+                # if still empty, check elapsed
+                if not is_occ and empty_start[spot_id]:
+                    elapsed = now - empty_start[spot_id]
+                    if not notified[spot_id] and elapsed >= VACANCY_DELAY:
+                        # 4a) Persist to DB
+                        session = SessionLocal()
+                        evt = VacancyEvent(
+                            timestamp=now,
+                            spot_id=spot_id,
+                            camera_id="main"
+                        )
+                        session.add(evt)
+                        session.commit()
+                        session.close()
+
+                        # 4b) Broadcast over WS
+                        broadcast_vacancy({
+                            "spot_id":   spot_id,
+                            "timestamp": now.isoformat()
+                        })
+                        notified[spot_id] = True
+
+                # if re‐occupied, reset
+                if is_occ:
+                    empty_start[spot_id] = None
+                    notified[spot_id]    = False
+
+            prev_states = curr_states.copy()
+
+            # 5) Draw vehicle boxes
+            for bx1, by1, bx2, by2 in vehicle_boxes:
+                cv2.rectangle(frame,
+                              (int(bx1), int(by1)),
+                              (int(bx2), int(by2)),
+                              (0, 255, 0), 2)
+
+            # 6) Encode to JPEG and yield MJPEG chunk
             success, jpeg = cv2.imencode('.jpg', frame)
             if not success:
                 continue
-            yield (b'--frame\r\n'
-                   b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+
+            yield (
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' +
+                jpeg.tobytes() +
+                b'\r\n'
+            )
+
     finally:
         cap.release()
+
+
+
 
 @app.get("/webcam_feed")
 def webcam_feed():
