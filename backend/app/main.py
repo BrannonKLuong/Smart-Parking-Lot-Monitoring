@@ -4,16 +4,13 @@ import anyio
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles 
 
 from inference.cv_model import detect
-from .spot_logic import get_spot_states, detect_vacancies, SPOTS
+from .spot_logic import SPOTS
 from .db import engine, Base, SessionLocal, VacancyEvent
-
-import io
-from contextlib import redirect_stdout, redirect_stderr
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
@@ -25,11 +22,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# app.mount("/static", StaticFiles(directory="../static"), name="static")
-# @app.get("/", include_in_schema=False)
-# def index():
-#     return FileResponse("../static/stream.html")
-
 
 class ConnectionManager:
     def __init__(self):
@@ -61,7 +53,6 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-
 def broadcast_vacancy(event: dict):
     """
     Send a vacancy event to all connected WebSocket clients from any thread.
@@ -74,14 +65,11 @@ def frame_generator():
     cap = cv2.VideoCapture(0)
 
     # Track previous state and vacancy timers
-    prev_states   = {spot_id: False for spot_id in SPOTS}
-    empty_start   = {spot_id: None  for spot_id in SPOTS}
-    notified      = {spot_id: False for spot_id in SPOTS}
+    prev_states = {spot_id: False for spot_id in SPOTS}
+    empty_start = {spot_id: None  for spot_id in SPOTS}
+    notified    = {spot_id: False for spot_id in SPOTS}
 
-    # Minimum time a spot must remain empty before we notify
     VACANCY_DELAY = timedelta(seconds=2)
-
-    # Only these classes count as vehicles
     vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"}
 
     try:
@@ -89,16 +77,6 @@ def frame_generator():
             ret, frame = cap.read()
             if not ret:
                 break
-
-            # 1) Draw your ROIs
-            for spot_id, (sx, sy, sw, sh) in SPOTS.items():
-                x1, y1 = int(sx), int(sy)
-                x2, y2 = int(sx + sw), int(sy + sh)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-                cv2.putText(frame, f"Spot {spot_id}",
-                            (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7, (255, 0, 0), 2)
 
             # 2) Run YOLO and filter for vehicle boxes
             results = detect(frame)
@@ -113,15 +91,30 @@ def frame_generator():
             # 3) Compute occupied/empty per spot by checking box centers
             curr_states = {}
             for spot_id, (sx, sy, sw, sh) in SPOTS.items():
-                x1, y1 = sx, sy
-                x2, y2 = sx + sw, sy + sh
                 occupied = False
                 for bx1, by1, bx2, by2 in vehicle_boxes:
                     cx, cy = (bx1 + bx2) / 2, (by1 + by2) / 2
-                    if x1 <= cx <= x2 and y1 <= cy <= y2:
+                    if sx <= cx <= sx + sw and sy <= cy <= sy + sh:
                         occupied = True
                         break
                 curr_states[spot_id] = occupied
+
+            # 1) Draw your ROIs, color‐coded by occupancy (red=occupied, green=free)
+            for spot_id, (sx, sy, sw, sh) in SPOTS.items():
+                x1, y1 = int(sx), int(sy)
+                x2, y2 = int(sx + sw), int(sy + sh)
+
+                occupied = curr_states.get(spot_id, True)
+                roi_color = (0, 0, 255) if occupied else (0, 255, 0)  # BGR
+
+                cv2.rectangle(frame, (x1, y1), (x2, y2), roi_color, 2)
+                cv2.putText(frame,
+                            f"Spot {spot_id}",
+                            (x1, y1 - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.7,
+                            roi_color,
+                            2)
 
             # 4) Hysteresis: only fire once after VACANCY_DELAY
             now = datetime.utcnow()
@@ -129,16 +122,16 @@ def frame_generator():
                 was_occ = prev_states[spot_id]
                 is_occ  = curr_states[spot_id]
 
-                # just turned from occupied → empty: start timer
+                # occupied → empty: start timer
                 if was_occ and not is_occ:
                     empty_start[spot_id] = now
                     notified[spot_id]    = False
 
-                # if still empty, check elapsed
+                # still empty and delay passed → vacancy
                 if not is_occ and empty_start[spot_id]:
                     elapsed = now - empty_start[spot_id]
                     if not notified[spot_id] and elapsed >= VACANCY_DELAY:
-                        # 4a) Persist to DB
+                        # Persist to DB
                         session = SessionLocal()
                         evt = VacancyEvent(
                             timestamp=now,
@@ -149,33 +142,35 @@ def frame_generator():
                         session.commit()
                         session.close()
 
-                        # 4b) Broadcast over WS
+                        # Broadcast vacancy
                         broadcast_vacancy({
                             "spot_id":   spot_id,
                             "timestamp": now.isoformat()
                         })
                         notified[spot_id] = True
-                
+
+                # empty → occupied: broadcast occupancy
                 if not was_occ and is_occ:
                     broadcast_vacancy({
                         "spot_id":   spot_id,
                         "timestamp": now.isoformat(),
-                        "status": "occupied"
+                        "status":    "occupied"
                     })
 
-                # if re‐occupied, reset
+                # reset on re‐occupy
                 if is_occ:
                     empty_start[spot_id] = None
                     notified[spot_id]    = False
 
             prev_states = curr_states.copy()
 
-            # 5) Draw vehicle boxes
+            # 5) Draw vehicle detection boxes in yellow
+            det_color = (0, 255, 255)
             for bx1, by1, bx2, by2 in vehicle_boxes:
                 cv2.rectangle(frame,
                               (int(bx1), int(by1)),
                               (int(bx2), int(by2)),
-                              (0, 255, 0), 2)
+                              det_color, 2)
 
             # 6) Encode to JPEG and yield MJPEG chunk
             success, jpeg = cv2.imencode('.jpg', frame)
@@ -192,27 +187,16 @@ def frame_generator():
     finally:
         cap.release()
 
-
 @app.get("/webcam_feed")
 def webcam_feed():
-    """
-    MJPEG stream showing ROIs, vehicle detections, and vacancy detection.
-    """
     return StreamingResponse(
         frame_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
-
 @app.get("/test_event")
 def test_event():
-    """
-    Manually broadcast a fake vacancy on spot 1 for debugging.
-    """
-    evt = {
-        "spot_id": 1,
-        "timestamp": datetime.utcnow().isoformat()
-    }
+    evt = {"spot_id": 1, "timestamp": datetime.utcnow().isoformat()}
     broadcast_vacancy(evt)
     return {"sent": evt}
 

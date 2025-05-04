@@ -10,21 +10,25 @@ export default function SpotTile({ id, isFree, freeSince, highlight }) {
     }
     const t0 = new Date(freeSince).getTime();
     const iv = setInterval(() => {
-      const delta = Math.floor((Date.now() - t0) / 1000);
-      setSecs(Math.max(0, delta));
+      const delta = Math.max(0, Math.floor((Date.now() - t0) / 1000));
+      setSecs(delta);
     }, 1000);
     return () => clearInterval(iv);
   }, [isFree, freeSince]);
 
   return (
     <div
-      className={`p-4 m-2 min-w-[100px] border rounded-lg ${
-        isFree
-          ? 'bg-green-100 dark:bg-green-900'
-          : 'bg-red-100 dark:bg-red-900'
-      } ${highlight ? 'ring-4 ring-blue-500' : ''}`}
+      className={`
+        p-4 flex flex-col items-center justify-center 
+        rounded-lg shadow cursor-pointer
+        ${isFree 
+          ? 'bg-green-200 text-green-800' 
+          : 'bg-red-200 text-red-800'}
+        ${highlight ? 'ring-4 ring-blue-500' : ''}
+      `}
+      onClick={() => {/* optional: filter by this spot */}}
     >
-      <div className="font-semibold">Spot {id}</div>
+      <div className="font-semibold mb-2">Spot {id}</div>
       {isFree ? (
         <div className="text-sm">Free for {secs}s</div>
       ) : (

@@ -1,3 +1,4 @@
+// ui/src/App.js
 import React, { useEffect, useState } from 'react';
 import Header from './Header';
 import Notifications from './Notifications';
@@ -13,42 +14,45 @@ function App() {
   const [muted, setMuted]           = useState(false);
   const [filterSpot, setFilterSpot] = useState(null);
 
-  // Load spot IDs
+  // Load spot IDs once
   useEffect(() => {
     fetch('/spots.json')
       .then(r => r.json())
       .then(data => {
         const ids = data.spots.map(s => s.id);
         setSpots(ids);
+        // assume all occupied at start
         setStatuses(Object.fromEntries(ids.map(id => [id, true])));
       });
   }, []);
 
-  // WebSocket
+  // WebSocket listener for vacancy/occupancy events
   useEffect(() => {
     const ws = new WebSocket('ws://localhost:8000/ws');
-    ws.onopen    = () => console.log('WS connected');
+    ws.onopen = () => console.log('✅ WS connected');
     ws.onmessage = ev => {
       const { spot_id, timestamp, status } = JSON.parse(ev.data);
-      const t = timestamp.endsWith('Z') ? timestamp : timestamp + 'Z';
+      const ts = timestamp.endsWith('Z') ? timestamp : timestamp + 'Z';
+
       if (status === 'occupied') {
         setStatuses(s => ({ ...s, [spot_id]: true }));
       } else {
         setStatuses(s => ({ ...s, [spot_id]: false }));
-        setTimes   (tms => ({ ...tms, [spot_id]: t }));
+        setTimes(t => ({ ...t, [spot_id]: ts }));
         if (!muted) {
-          setNotes(n => [...n, { spot_id, timestamp: t }]);
+          setNotes(n => [...n, { spot_id, timestamp: ts }]);
           setTimeout(() => {
             setNotes(n => n.filter(x => x.spot_id !== spot_id));
           }, 5000);
         }
       }
     };
-    ws.onerror = e => console.error('WS error', e);
-    ws.onclose = () => console.warn('WS closed');
+    ws.onerror = e => console.error('❌ WS error', e);
+    ws.onclose = () => console.warn('⚠️ WS closed');
     return () => ws.close();
   }, [muted]);
 
+  // If filtering, only show notes for that spot
   const visibleNotes = filterSpot
     ? notes.filter(n => n.spot_id === filterSpot)
     : notes;
@@ -62,6 +66,7 @@ function App() {
           totalSpots={spots.length}
           freeSpots={spots.filter(id => !statuses[id]).length}
         />
+
         <Notifications
           notes={visibleNotes}
           onFilter={setFilterSpot}
@@ -71,7 +76,7 @@ function App() {
 
         <main className="p-4">
           {/* Live MJPEG feed */}
-          <div className="flex justify-center">
+          <div className="flex justify-center mb-8">
             <img
               src="http://localhost:8000/webcam_feed"
               alt="Live feed"
@@ -79,8 +84,8 @@ function App() {
             />
           </div>
 
-          {/* Responsive grid of SpotTiles */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mt-6">
+          {/* Responsive grid of colored SpotTiles */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {spots.map(id => (
               <SpotTile
                 key={id}
