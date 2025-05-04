@@ -4,8 +4,9 @@ import anyio
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles 
 
 from inference.cv_model import detect
 from .spot_logic import get_spot_states, detect_vacancies, SPOTS
@@ -24,6 +25,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# app.mount("/static", StaticFiles(directory="../static"), name="static")
+# @app.get("/", include_in_schema=False)
+# def index():
+#     return FileResponse("../static/stream.html")
+
 
 class ConnectionManager:
     def __init__(self):
@@ -71,7 +77,7 @@ def frame_generator():
     notified      = {spot_id: False for spot_id in SPOTS}
 
     # Minimum time a spot must remain empty before we notify
-    VACANCY_DELAY = timedelta(seconds=5)
+    VACANCY_DELAY = timedelta(seconds=2)
 
     # Only these classes count as vehicles
     vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"}
@@ -178,8 +184,6 @@ def frame_generator():
         cap.release()
 
 
-
-
 @app.get("/webcam_feed")
 def webcam_feed():
     """
@@ -189,3 +193,5 @@ def webcam_feed():
         frame_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
+
+app.mount("/", StaticFiles(directory="../static", html=True), name="static")
