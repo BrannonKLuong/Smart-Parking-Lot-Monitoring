@@ -194,4 +194,17 @@ def webcam_feed():
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
+
+@app.get("/test_event")
+def test_event():
+    """
+    Manually broadcast a fake vacancy on spot 1 for debugging.
+    """
+    evt = {
+        "spot_id": 1,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    broadcast_vacancy(evt)
+    return {"sent": evt}
+
 app.mount("/", StaticFiles(directory="../static", html=True), name="static")
