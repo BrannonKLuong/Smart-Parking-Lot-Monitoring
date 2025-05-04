@@ -66,6 +66,8 @@ def broadcast_vacancy(event: dict):
     """
     Send a vacancy event to all connected WebSocket clients from any thread.
     """
+    if "timestamp" in event and not event["timestamp"].endswith("Z"):
+        event["timestamp"] += "Z"  # Ensure UTC format
     anyio.from_thread.run(manager.broadcast, json.dumps(event))
 
 def frame_generator():
@@ -153,6 +155,13 @@ def frame_generator():
                             "timestamp": now.isoformat()
                         })
                         notified[spot_id] = True
+                
+                if not was_occ and is_occ:
+                    broadcast_vacancy({
+                        "spot_id":   spot_id,
+                        "timestamp": now.isoformat(),
+                        "status": "occupied"
+                    })
 
                 # if re‐occupied, reset
                 if is_occ:
