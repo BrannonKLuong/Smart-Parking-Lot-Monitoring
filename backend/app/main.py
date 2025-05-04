@@ -2,11 +2,13 @@ import json
 import cv2
 import anyio
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Body, HTTPException
 
 from inference.cv_model import detect
 from .spot_logic import SPOTS
@@ -14,6 +16,7 @@ from .db import engine, Base, SessionLocal, VacancyEvent
 
 # Initialize database tables
 Base.metadata.create_all(bind=engine)
+SPOTS_PATH = Path(__file__).parent.parent / "spots.json"
 
 app = FastAPI()
 app.add_middleware(
@@ -188,5 +191,23 @@ def test_event():
     evt = {"spot_id": 1, "timestamp": datetime.utcnow().isoformat()}
     broadcast_vacancy(evt)
     return {"sent": evt}
+
+@app.get("/api/spots")
+def get_spots():
+    try:
+        return json.loads(SPOTS_PATH.read_text())
+    except Exception as e:
+        raise HTTPException(500, f"Could not read spots.json: {e}")
+
+@app.post("/api/spots")
+def save_spots(config: dict = Body(...)):
+    """
+    Expects a payload { spots: [ { id, x, y, w, h }, … ] }
+    """
+    try:
+        SPOTS_PATH.write_text(json.dumps(config, indent=2))
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, f"Could not write spots.json: {e}")
 
 app.mount("/", StaticFiles(directory="../static", html=True), name="static")
