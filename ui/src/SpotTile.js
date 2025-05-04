@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 
-export default function SpotTile({ id, isFree, freeSince }) {
+export default function SpotTile({ id, isFree, freeSince, highlight }) {
   const [secs, setSecs] = useState(0);
 
   useEffect(() => {
@@ -8,26 +8,28 @@ export default function SpotTile({ id, isFree, freeSince }) {
       setSecs(0);
       return;
     }
-    // parse freeSince as UTC
     const t0 = new Date(freeSince).getTime();
     const iv = setInterval(() => {
       const delta = Math.floor((Date.now() - t0) / 1000);
-      setSecs(Math.max(0, delta));  // clamp to ≥ 0
+      setSecs(Math.max(0, delta));
     }, 1000);
     return () => clearInterval(iv);
   }, [isFree, freeSince]);
 
   return (
-    <div style={{
-      border: '1px solid #666', borderRadius: 4,
-      padding: 8, margin: 4, minWidth: 100,
-      background: isFree ? '#d4f8d4' : '#f8d4d4'
-    }}>
-      <div>Spot {id}</div>
-      {isFree
-        ? <div>Free for {secs}s</div>
-        : <div>Occupied</div>
-      }
+    <div
+      className={`p-4 m-2 min-w-[100px] border rounded-lg ${
+        isFree
+          ? 'bg-green-100 dark:bg-green-900'
+          : 'bg-red-100 dark:bg-red-900'
+      } ${highlight ? 'ring-4 ring-blue-500' : ''}`}
+    >
+      <div className="font-semibold">Spot {id}</div>
+      {isFree ? (
+        <div className="text-sm">Free for {secs}s</div>
+      ) : (
+        <div className="text-sm">Occupied</div>
+      )}
     </div>
   );
 }
