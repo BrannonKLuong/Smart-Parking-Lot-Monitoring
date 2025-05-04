@@ -31,13 +31,29 @@ SPOTS: Dict[int, Tuple[float,float,float,float]] = {
 
 def refresh_spots():
     """
-    Re-read spots.json (in either format) and rebuild SPOTS.
+    Re-read spots.json and update the existing SPOTS dict in-place,
+    so any code holding a reference to SPOTS sees the new contents.
     """
-    global SPOTS
-    SPOTS = {
-        spot["id"]: _unpack(spot)
-        for spot in _load_raw()
+    from pathlib import Path
+    import json
+
+    SPOTS_FILE = Path(__file__).resolve().parents[1] / "spots.json"
+    raw = json.loads(SPOTS_FILE.read_text()).get("spots", [])
+
+    # build a new dict of the same shape
+    new = {
+        spot["id"]: (
+            spot["bbox"][0],
+            spot["bbox"][1],
+            spot["bbox"][2] - spot["bbox"][0],
+            spot["bbox"][3] - spot["bbox"][1],
+        )
+        for spot in raw
     }
+
+    # mutate the existing SPOTS dict in-place
+    SPOTS.clear()
+    SPOTS.update(new)
 
 def get_spot_states(detections) -> Dict[int, bool]:
     states = {sid: False for sid in SPOTS}

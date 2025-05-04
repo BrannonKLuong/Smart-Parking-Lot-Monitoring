@@ -26,7 +26,7 @@ export default function App() {
       .then(r => r.json())
       .then(data => {
         setSpots(data.spots.map(s => s.id));
-        setStatuses(Object.fromEntries(data.spots.map(s => [s.id, false])));
+        setStatuses(Object.fromEntries(data.spots.map(s => [s.id, true])));
       });
   }, []);
 
