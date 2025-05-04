@@ -4,19 +4,23 @@ import anyio
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Body, HTTPException
+from fastapi.staticfiles import StaticFiles
 
 from inference.cv_model import detect
-from .spot_logic import SPOTS
+from .spot_logic import SPOTS, refresh_spots
 from .db import engine, Base, SessionLocal, VacancyEvent
 
-# Initialize database tables
+# Initialize DB tables
 Base.metadata.create_all(bind=engine)
-SPOTS_PATH = Path(__file__).parent.parent / "spots.json"
+
+# Path to the single backend/spots.json
+APP_DIR     = Path(__file__).resolve().parent     # .../backend/app
+BACKEND_DIR = APP_DIR.parent                       # .../backend
+ROOT_DIR    = BACKEND_DIR.parent                   # project root
+SPOTS_PATH  = BACKEND_DIR / "spots.json"
 
 app = FastAPI()
 app.add_middleware(
@@ -26,58 +30,103 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 1) Serve React's static assets under /static
+app.mount(
+    "/static",
+    StaticFiles(directory=str(ROOT_DIR / "static"), html=False),
+    name="static",
+)
+
+# 2) Serve index.html at /
+@app.get("/", include_in_schema=False)
+async def serve_index():
+    return FileResponse(str(ROOT_DIR / "static" / "index.html"))
+
+
+# --- WebSocket manager ---
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
 
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active_connections.append(ws)
 
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+    def disconnect(self, ws: WebSocket):
+        if ws in self.active_connections:
+            self.active_connections.remove(ws)
 
     async def broadcast(self, message: str):
-        for connection in list(self.active_connections):
+        for ws in list(self.active_connections):
             try:
-                await connection.send_text(message)
-            except Exception:
-                self.disconnect(connection)
+                await ws.send_text(message)
+            except:
+                self.disconnect(ws)
 
 manager = ConnectionManager()
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+async def websocket_endpoint(ws: WebSocket):
+    await manager.connect(ws)
     try:
         while True:
-            await websocket.receive_text()
+            await ws.receive_text()
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(ws)
 
 def broadcast_vacancy(event: dict):
-    """
-    Send a vacancy event to all connected WebSocket clients from any thread.
-    """
     if "timestamp" in event and not event["timestamp"].endswith("Z"):
-        event["timestamp"] += "Z"  # Ensure UTC format
+        event["timestamp"] += "Z"
     anyio.from_thread.run(manager.broadcast, json.dumps(event))
 
+
+# --- Spots Editor API ---
+@app.get("/api/spots")
+def get_spots():
+    raw = json.loads(SPOTS_PATH.read_text())
+    return {
+        "spots": [
+            {
+                "id": spot["id"],
+                "x":  spot["bbox"][0],
+                "y":  spot["bbox"][1],
+                "w":  spot["bbox"][2] - spot["bbox"][0],
+                "h":  spot["bbox"][3] - spot["bbox"][1],
+            }
+            for spot in raw.get("spots", [])
+        ]
+    }
+
+@app.post("/api/spots")
+def save_spots(config: dict = Body(...)):
+    try:
+        disk = {
+            "spots": [
+                {
+                    "id":   s["id"],
+                    "bbox": [s["x"], s["y"], s["x"] + s["w"], s["y"] + s["h"]],
+                }
+                for s in config.get("spots", [])
+            ]
+        }
+        SPOTS_PATH.write_text(json.dumps(disk, indent=2))
+        refresh_spots()
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, f"Could not write spots.json: {e}")
+
+
+# --- Video stream + detection ---
 def frame_generator():
     cap = cv2.VideoCapture(0)
 
-    # Track previous raw detection state
-    prev_states = {spot_id: False for spot_id in SPOTS}
-    # When an empty period started
-    empty_start = {spot_id: None  for spot_id in SPOTS}
-    # Whether we've notified (and updated display) for this vacancy
-    notified    = {spot_id: False for spot_id in SPOTS}
-    # The state we actually draw: True=occupied, False=free
-    display_states = {spot_id: True for spot_id in SPOTS}
+    prev_states    = {sid: False for sid in SPOTS}
+    empty_start    = {sid: None  for sid in SPOTS}
+    notified       = {sid: False for sid in SPOTS}
+    display_states = {sid: True  for sid in SPOTS}
 
     VACANCY_DELAY   = timedelta(seconds=2)
-    vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"}
+    vehicle_classes = {"car","truck","bus","motorbike","bicycle"}
 
     try:
         while True:
@@ -85,7 +134,7 @@ def frame_generator():
             if not ret:
                 break
 
-            # 2) Run detection
+            # 1) YOLO detection
             results = detect(frame)
             vehicle_boxes = []
             for res in results:
@@ -95,87 +144,61 @@ def frame_generator():
                     if res.names[cls_idx] in vehicle_classes:
                         vehicle_boxes.append(boxes[i])
 
-            # 3) Compute raw occupied/empty
+            # 2) Raw occupancy
             curr_states = {}
-            for spot_id, (sx, sy, sw, sh) in SPOTS.items():
-                occupied = False
-                for bx1, by1, bx2, by2 in vehicle_boxes:
-                    cx, cy = (bx1+bx2)/2, (by1+by2)/2
-                    if sx <= cx <= sx+sw and sy <= cy <= sy+sh:
-                        occupied = True
-                        break
-                curr_states[spot_id] = occupied
+            for sid,(sx,sy,sw,sh) in SPOTS.items():
+                occ = any(
+                    sx <= (bx1+bx2)/2 <= sx+sw and sy <= (by1+by2)/2 <= sy+sh
+                    for bx1,by1,bx2,by2 in vehicle_boxes
+                )
+                curr_states[sid] = occ
 
-            # 4) Hysteresis + update display_states exactly once per event
+            # 3) Hysteresis & events
             now = datetime.utcnow()
-            for spot_id in SPOTS:
-                was = prev_states[spot_id]
-                is_ = curr_states[spot_id]
+            for sid in SPOTS:
+                was, is_ = prev_states[sid], curr_states[sid]
 
-                # occupied → empty: start timer
                 if was and not is_:
-                    empty_start[spot_id] = now
-                    notified[spot_id]    = False
+                    empty_start[sid]=now; notified[sid]=False
 
-                # still empty and delay passed → vacancy event
-                if not is_ and empty_start[spot_id]:
-                    if not notified[spot_id] and (now - empty_start[spot_id] >= VACANCY_DELAY):
-                        # persist + broadcast as before...
-                        session = SessionLocal()
-                        evt = VacancyEvent(timestamp=now, spot_id=spot_id, camera_id="main")
-                        session.add(evt); session.commit(); session.close()
-                        broadcast_vacancy({"spot_id": spot_id, "timestamp": now.isoformat()})
-                        notified[spot_id]     = True
-                        display_states[spot_id] = False   # <- flip display to FREE
+                if (not is_ and empty_start[sid] and
+                    not notified[sid] and now - empty_start[sid] >= VACANCY_DELAY):
+                    session = SessionLocal()
+                    evt = VacancyEvent(timestamp=now,
+                                       spot_id=sid,
+                                       camera_id="main")
+                    session.add(evt); session.commit(); session.close()
+                    broadcast_vacancy({"spot_id":sid,"timestamp":now.isoformat()})
+                    notified[sid]=True; display_states[sid]=False
 
-                # empty → occupied: immediate occupancy event
                 if not was and is_:
-                    broadcast_vacancy({"spot_id": spot_id, "timestamp": now.isoformat(), "status": "occupied"})
-                    display_states[spot_id] = True    # <- flip display to OCCUPIED
+                    broadcast_vacancy({"spot_id":sid,"timestamp":now.isoformat(),
+                                       "status":"occupied"})
+                    display_states[sid]=True
 
-                # if re-occupied, reset timers
                 if is_:
-                    empty_start[spot_id] = None
-                    notified[spot_id]    = False
+                    empty_start[sid]=None; notified[sid]=False
 
             prev_states = curr_states.copy()
 
-            # 1) Draw your ROIs **after** updating display_states
-            for spot_id, (sx, sy, sw, sh) in SPOTS.items():
-                x1, y1 = int(sx), int(sy)
-                x2, y2 = int(sx+sw), int(sy+sh)
+            # 4) Draw ROIs & vehicle boxes
+            for sid,(sx,sy,sw,sh) in SPOTS.items():
+                x1,y1,x2,y2 = int(sx),int(sy),int(sx+sw),int(sy+sh)
+                color = (0,0,255) if display_states[sid] else (0,255,0)
+                cv2.rectangle(frame,(x1,y1),(x2,y2),color,2)
+                cv2.putText(frame, f"Spot {sid}", (x1,y1-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-                occ_display = display_states[spot_id]
-                color = (0, 0, 255) if occ_display else (0, 255, 0)  # BGR
+            det_color = (0,255,255)
+            for bx1,by1, bx2,by2 in vehicle_boxes:
+                cv2.rectangle(frame,(int(bx1),int(by1)),
+                              (int(bx2),int(by2)),det_color,2)
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, f"Spot {spot_id}",
-                            (x1, y1-10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,
-                            color,
-                            2)
-
-            # 5) Draw vehicle boxes just for visual—with no effect on ROI colors
-            det_color = (0, 255, 255)
-            for bx1, by1, bx2, by2 in vehicle_boxes:
-                cv2.rectangle(frame,
-                              (int(bx1), int(by1)),
-                              (int(bx2), int(by2)),
-                              det_color, 2)
-
-            # 6) JPEG encode
-            success, jpeg = cv2.imencode('.jpg', frame)
+            success,jpeg = cv2.imencode('.jpg', frame)
             if not success:
                 continue
-
-            yield (
-                b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' +
-                jpeg.tobytes() +
-                b'\r\n'
-            )
-
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n'+jpeg.tobytes()+b'\r\n')
     finally:
         cap.release()
 
@@ -188,26 +211,6 @@ def webcam_feed():
 
 @app.get("/test_event")
 def test_event():
-    evt = {"spot_id": 1, "timestamp": datetime.utcnow().isoformat()}
+    evt = {"spot_id":1, "timestamp":datetime.utcnow().isoformat()}
     broadcast_vacancy(evt)
-    return {"sent": evt}
-
-@app.get("/api/spots")
-def get_spots():
-    try:
-        return json.loads(SPOTS_PATH.read_text())
-    except Exception as e:
-        raise HTTPException(500, f"Could not read spots.json: {e}")
-
-@app.post("/api/spots")
-def save_spots(config: dict = Body(...)):
-    """
-    Expects a payload { spots: [ { id, x, y, w, h }, … ] }
-    """
-    try:
-        SPOTS_PATH.write_text(json.dumps(config, indent=2))
-        return {"ok": True}
-    except Exception as e:
-        raise HTTPException(500, f"Could not write spots.json: {e}")
-
-app.mount("/", StaticFiles(directory="../static", html=True), name="static")
+    return {"sent":evt}

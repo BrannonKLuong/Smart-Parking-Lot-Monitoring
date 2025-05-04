@@ -1,52 +1,66 @@
 import json
-import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Tuple
+import datetime
 
-from inference.cv_model import detect
-from .db import SessionLocal, VacancyEvent
+# only ever use this one
+SPOTS_FILE = Path(__file__).resolve().parents[1] / "spots.json"
 
-# Load spot definitions
-SPOTS_FILE = Path(__file__).parent.parent / "spots.json"
-with open(SPOTS_FILE) as f:
-    data = json.load(f)
-SPOTS = {spot["id"]: tuple(spot["bbox"]) for spot in data.get("spots", [])}
+def _load_raw():
+    return json.loads(SPOTS_FILE.read_text()).get("spots", [])
 
+def _unpack(spot: dict) -> Tuple[float,float,float,float]:
+    """
+    If spot has 'bbox':[x1,y1,x2,y2], use it.
+    Otherwise expect {x,y,w,h} and compute bbox.
+    Returns (sx,sy,sw,sh).
+    """
+    if "bbox" in spot:
+        x1,y1,x2,y2 = spot["bbox"]
+        return x1, y1, x2 - x1, y2 - y1
+    # fallback to React-editor shape
+    x, y, w, h = spot["x"], spot["y"], spot["w"], spot["h"]
+    return x, y, w, h
+
+# initial load
+_raw = _load_raw()
+SPOTS: Dict[int, Tuple[float,float,float,float]] = {
+    spot["id"]: _unpack(spot)
+    for spot in _raw
+}
+
+def refresh_spots():
+    """
+    Re-read spots.json (in either format) and rebuild SPOTS.
+    """
+    global SPOTS
+    SPOTS = {
+        spot["id"]: _unpack(spot)
+        for spot in _load_raw()
+    }
 
 def get_spot_states(detections) -> Dict[int, bool]:
-    """
-    Given YOLO detections, return a dict mapping spot_id to occupied (True/False).
-    Handles both tensor/ndarray and plain-list representations of boxes.
-    """
-    states = {spot_id: False for spot_id in SPOTS}
+    states = {sid: False for sid in SPOTS}
     for det in detections:
-        # support both numpy/tensor and list inputs for xyxy
-        raw_boxes = det.boxes.xyxy
-        if hasattr(raw_boxes, "tolist"):
-            boxes = raw_boxes.tolist()
-        else:
-            boxes = raw_boxes  # already a list of [x1,y1,x2,y2]
-        for x1, y1, x2, y2 in boxes:
-            cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
-            for spot_id, (sx, sy, sw, sh) in SPOTS.items():
-                if sx <= cx <= sx + sw and sy <= cy <= sy + sh:
-                    states[spot_id] = True
+        raw = det.boxes.xyxy
+        boxes = raw.tolist() if hasattr(raw, "tolist") else raw
+        for x1,y1,x2,y2 in boxes:
+            cx, cy = (x1+x2)/2, (y1+y2)/2
+            for sid, (sx, sy, sw, sh) in SPOTS.items():
+                if sx <= cx <= sx+sw and sy <= cy <= sy+sh:
+                    states[sid] = True
     return states
 
-def detect_vacancies(prev_states: Dict[int, bool], curr_states: Dict[int, bool]):
-    """
-    Compare previous and current spot states and generate vacancy events.
-    """
+def detect_vacancies(prev_states, curr_states):
+    from .db import SessionLocal, VacancyEvent
+    # import here to avoid circular
+    from .main import broadcast_vacancy
+
     session = SessionLocal()
-    for spot_id, occupied in curr_states.items():
-        was_occupied = prev_states.get(spot_id, False)
-        if was_occupied and not occupied:
-            ts = datetime.datetime.utcnow()
-            # Persist via ORM
-            event = VacancyEvent(timestamp=ts, spot_id=spot_id, camera_id="main")
-            session.add(event)
-            session.commit()
-            # Broadcast vacancy event
-            from .main import broadcast_vacancy
-            broadcast_vacancy({"spot_id": spot_id, "timestamp": ts.isoformat()})
+    for sid, occ in curr_states.items():
+        if prev_states.get(sid, False) and not occ:
+            ts = datetime.utcnow()
+            evt = VacancyEvent(timestamp=ts, spot_id=sid, camera_id="main")
+            session.add(evt); session.commit()
+            broadcast_vacancy({"spot_id": sid, "timestamp": ts.isoformat()})
     session.close()
