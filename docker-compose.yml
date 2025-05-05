@@ -21,6 +21,5 @@ services:
       - ./sample_videos:/app/sample_videos
     depends_on:
       - db
-
 volumes:
   db_data:

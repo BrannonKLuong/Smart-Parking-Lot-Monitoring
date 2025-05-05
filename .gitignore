@@ -1,0 +1,16 @@
+# --- Python ---
+.venv/
+**/__pycache__/
+*.py[cod]
+*.sqlite
+
+# --- React / Node ---
+ui/node_modules/
+ui/build/
+# If you want to keep your committed static/ folder, then ignore ui/build only.
+# If you instead want to stop committing static/ entirely, add:
+# static/
+
+# --- Misc ---
+.DS_Store
+.env
