@@ -5,6 +5,7 @@
 *.sqlite
 .aws-sam/
 backend/.aws-sam/
+ui/parking-admin/.angular/cache/
 
 # --- React / Node ---
 ui/node_modules/
