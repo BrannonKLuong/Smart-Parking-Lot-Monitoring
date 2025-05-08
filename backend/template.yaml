@@ -1,0 +1,30 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Smart Parking Lot API
+
+Globals:
+  Function:
+    Timeout: 30
+
+Resources:
+  ParkingApi:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: SmartParkingApi
+      Handler: app.main.handler      # points to Mangum handler
+      Runtime: python3.12
+      CodeUri: ./app
+      MemorySize: 512
+      Policies:
+        - AmazonSNSFullAccess        # to publish notifications later
+      Events:
+        SpotsProxy:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+
+Outputs:
+  ApiUrl:
+    Description: "HTTP API endpoint"
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com"

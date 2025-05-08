@@ -3,6 +3,8 @@
 **/__pycache__/
 *.py[cod]
 *.sqlite
+.aws-sam/
+backend/.aws-sam/
 
 # --- React / Node ---
 ui/node_modules/
