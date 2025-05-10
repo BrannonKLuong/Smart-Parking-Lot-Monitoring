@@ -17,8 +17,6 @@ services:
     volumes:
       # Mount the entire backend directory so code, Alembic scripts, and configs all sync correctly
       - ./backend:/app
-      # Mount sample videos if you need to test with video files
-      - ./sample_videos:/app/sample_videos
     depends_on:
       - db
 volumes:
