@@ -11,36 +11,32 @@ from fastapi.staticfiles import StaticFiles
 
 from inference.cv_model import detect
 from .spot_logic import SPOTS, refresh_spots
-from .db import engine, Base, SessionLocal, VacancyEvent
+from .db import engine, Base, SessionLocal, VacancyEvent, DeviceToken
 
 import os
 import firebase_admin
 from firebase_admin import credentials, messaging, initialize_app
 from pydantic import BaseModel
-from .db import SessionLocal, DeviceToken, engine
-from sqlalchemy.exc import IntegrityError
-from pydantic import BaseModel
 from sqlmodel import Session, select
-from .db import engine, DeviceToken
+from .db import DeviceToken
 
-
-
+# Initialize Firebase
 cred_path = os.environ.get("FIREBASE_CRED", "")
 if not cred_path or not os.path.isfile(cred_path):
     raise RuntimeError(f"Firebase credential not found at {cred_path!r}")
-
 cred = credentials.Certificate(cred_path)
 initialize_app(cred)
 
 # Initialize DB tables
 Base.metadata.create_all(bind=engine)
 
-# Path to the single backend/spots.json
-APP_DIR     = Path(__file__).resolve().parent     # .../backend/app
-BACKEND_DIR = APP_DIR.parent                       # .../backend
-ROOT_DIR    = BACKEND_DIR.parent                   # project root
+# Paths
+APP_DIR     = Path(__file__).resolve().parent
+BACKEND_DIR = APP_DIR.parent
+ROOT_DIR    = BACKEND_DIR.parent
 SPOTS_PATH  = BACKEND_DIR / "spots.json"
 
+# FastAPI setup
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -49,39 +45,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 1) Serve React's static assets under /static
+# Serve static files
 app.mount(
     "/static",
     StaticFiles(directory=str(ROOT_DIR / "static"), html=False),
     name="static",
 )
 
-# 2) Serve index.html at /
 @app.get("/", include_in_schema=False)
 async def serve_index():
     return FileResponse(str(ROOT_DIR / "static" / "index.html"))
 
-
-# --- WebSocket manager ---
+# WebSocket manager
 class ConnectionManager:
     def __init__(self):
         self.active_connections: list[WebSocket] = []
-
     async def connect(self, ws: WebSocket):
         await ws.accept()
         self.active_connections.append(ws)
-
     def disconnect(self, ws: WebSocket):
         if ws in self.active_connections:
             self.active_connections.remove(ws)
-
     async def broadcast(self, message: str):
         for ws in list(self.active_connections):
             try:
                 await ws.send_text(message)
             except:
                 self.disconnect(ws)
-
 manager = ConnectionManager()
 
 @app.websocket("/ws")
@@ -98,188 +88,124 @@ def broadcast_vacancy(event: dict):
         event["timestamp"] += "Z"
     anyio.from_thread.run(manager.broadcast, json.dumps(event))
 
-
-# --- Spots Editor API ---
+# Spots API
 @app.get("/api/spots")
 def get_spots():
     raw = json.loads(SPOTS_PATH.read_text())
-    return {
-        "spots": [
-            {
-                "id": spot["id"],
-                "x":  spot["bbox"][0],
-                "y":  spot["bbox"][1],
-                "w":  spot["bbox"][2] - spot["bbox"][0],
-                "h":  spot["bbox"][3] - spot["bbox"][1],
-            }
-            for spot in raw.get("spots", [])
-        ]
-    }
+    return {"spots": [
+        {"id": s["id"], "x": s["bbox"][0], "y": s["bbox"][1],
+         "w": s["bbox"][2]-s["bbox"][0], "h": s["bbox"][3]-s["bbox"][1]}
+        for s in raw.get("spots", [])
+    ]}
 
 @app.post("/api/spots")
 def save_spots(config: dict = Body(...)):
     try:
-        disk = {
-            "spots": [
-                {
-                    "id":   s["id"],
-                    "bbox": [s["x"], s["y"], s["x"] + s["w"], s["y"] + s["h"]],
-                }
-                for s in config.get("spots", [])
-            ]
-        }
+        disk = {"spots": [{"id": s["id"],
+                           "bbox": [s["x"], s["y"], s["x"]+s["w"], s["y"]+s["h"]]
+                          } for s in config.get("spots", [])]}
         SPOTS_PATH.write_text(json.dumps(disk, indent=2))
         refresh_spots()
         return {"ok": True}
     except Exception as e:
         raise HTTPException(500, f"Could not write spots.json: {e}")
 
+# Video capture helper
+def make_capture():
+    src = os.getenv("VIDEO_SOURCE", "0")
+    try:
+        idx = int(src)
+    except ValueError:
+         # URL → use FFmpeg backend
+        cap = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+    else:
+        cap = cv2.VideoCapture(idx)
 
-# --- Video stream + detection ---
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open video source {src!r}")
+    return cap
+
+
+# Video stream + detection
 def frame_generator():
-    cap = cv2.VideoCapture(0)
-
-    # Initial state maps
-    prev_states    = {}
-    empty_start    = {}
-    notified       = {}
+    cap = make_capture()
+    prev_states = {}
+    empty_start = {}
+    notified = {}
     display_states = {}
-
-    VACANCY_DELAY   = timedelta(seconds=2)
-    vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"}
-
+    VACANCY_DELAY = timedelta(seconds=2)
+    vehicle_classes = {"car","truck","bus","motorbike","bicycle"}
     try:
         while True:
-            # 1) Ensure every spot in SPOTS has a state entry
             for sid in SPOTS:
                 prev_states.setdefault(sid, False)
                 empty_start.setdefault(sid, None)
                 notified.setdefault(sid, False)
                 display_states.setdefault(sid, True)
-            # 2) Clean up any removed spots
             for sid in list(prev_states):
                 if sid not in SPOTS:
-                    prev_states.pop(sid, None)
-                    empty_start.pop(sid, None)
-                    notified.pop(sid, None)
-                    display_states.pop(sid, None)
-
+                    prev_states.pop(sid)
+                    empty_start.pop(sid)
+                    notified.pop(sid)
+                    display_states.pop(sid)
             ret, frame = cap.read()
             if not ret:
                 break
-
-            # 3) Run YOLO and collect vehicle boxes
             results = detect(frame)
             vehicle_boxes = []
             for res in results:
-                boxes   = res.boxes.xyxy.tolist()
+                boxes = res.boxes.xyxy.tolist()
                 classes = res.boxes.cls.tolist()
                 for i, cls_idx in enumerate(classes):
                     if res.names[cls_idx] in vehicle_classes:
                         vehicle_boxes.append(boxes[i])
-
-            # 4) Compute current occupancy
             curr_states = {}
-            for sid, (sx, sy, sw, sh) in SPOTS.items():
+            for sid,(sx,sy,sw,sh) in SPOTS.items():
                 occ = any(
-                    sx <= (bx1+bx2)/2 <= sx+sw and
-                    sy <= (by1+by2)/2 <= sy+sh
+                    sx <= (bx1+bx2)/2 <= sx+sw and sy <= (by1+by2)/2 <= sy+sh
                     for bx1,by1,bx2,by2 in vehicle_boxes
                 )
                 curr_states[sid] = occ
-
-            # 5) Hysteresis + event broadcast
             now = datetime.utcnow()
             for sid in SPOTS:
-                was = prev_states.get(sid, False)
-                is_ = curr_states.get(sid, False)
-
-                # occupied→empty: start timer
+                was = prev_states[sid]
+                is_ = curr_states[sid]
                 if was and not is_:
                     empty_start[sid] = now
-                    notified[sid]    = False
-
-                # still empty + delay → vacancy event
-                if (not is_
-                        and empty_start[sid]
-                        and not notified[sid]
-                        and now - empty_start[sid] >= VACANCY_DELAY):
-                    session = SessionLocal()
-                    evt = VacancyEvent(timestamp=now,
-                                       spot_id=sid,
-                                       camera_id="main")
-                    session.add(evt)
-                    session.commit()
-                    session.close()
-
-                    broadcast_vacancy({
-                        "spot_id":   sid,
-                        "timestamp": now.isoformat()
-                    })
-                    notified[sid]      = True
+                    notified[sid] = False
+                if not is_ and empty_start[sid] and not notified[sid] and now - empty_start[sid] >= VACANCY_DELAY:
+                    with SessionLocal() as session:
+                        evt = VacancyEvent(timestamp=now, spot_id=sid, camera_id="main")
+                        session.add(evt); session.commit()
+                    broadcast_vacancy({"spot_id":sid, "timestamp":now.isoformat()})
+                    notified[sid] = True
                     display_states[sid] = False
-
-                # empty→occupied: immediate occupancy event
                 if not was and is_:
-                    broadcast_vacancy({
-                        "spot_id":   sid,
-                        "timestamp": now.isoformat(),
-                        "status":    "occupied"
-                    })
+                    broadcast_vacancy({"spot_id":sid, "timestamp":now.isoformat(), "status":"occupied"})
                     display_states[sid] = True
-
-                # reset on any occupied frame
                 if is_:
                     empty_start[sid] = None
-                    notified[sid]    = False
-
-            # roll prev_states forward
+                    notified[sid] = False
             prev_states = curr_states.copy()
-
-            # 6) Draw all ROIs, using display_states.get() for safety
-            for sid, (sx, sy, sw, sh) in SPOTS.items():
-                x1, y1 = int(sx), int(sy)
-                x2, y2 = int(sx + sw), int(sy + sh)
-                color = (0, 0, 255) if display_states.get(sid, True) else (0, 255, 0)
-
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame,
-                            f"Spot {sid}",
-                            (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.7,
-                            color,
-                            2)
-
-            # 7) Draw vehicle detection boxes
-            for bx1, by1, bx2, by2 in vehicle_boxes:
-                cv2.rectangle(frame,
-                              (int(bx1), int(by1)),
-                              (int(bx2), int(by2)),
-                              (0, 255, 255),
-                              2)
-
-            # 8) JPEG encode & emit
+            for sid,(sx,sy,sw,sh) in SPOTS.items():
+                x1,y1 = int(sx),int(sy)
+                x2,y2 = int(sx+sw),int(sy+sh)
+                color = (0,0,255) if display_states[sid] else (0,255,0)
+                cv2.rectangle(frame,(x1,y1),(x2,y2),color,2)
+                cv2.putText(frame,f"Spot {sid}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
+            for bx1,by1,bx2,by2 in vehicle_boxes:
+                cv2.rectangle(frame,(int(bx1),int(by1)),(int(bx2),int(by2)),(0,255,255),2)
             success, jpeg = cv2.imencode('.jpg', frame)
             if not success:
                 continue
-
-            yield (
-                b'--frame\r\n'
-                b'Content-Type: image/jpeg\r\n\r\n' +
-                jpeg.tobytes() +
-                b'\r\n'
-            )
-
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
     finally:
         cap.release()
 
 @app.get("/webcam_feed")
 def webcam_feed():
-    return StreamingResponse(
-        frame_generator(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
-    )
+    return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.get("/test_event")
 def test_event():
@@ -297,4 +223,4 @@ async def register_token(data: TokenIn):
         if not sess.exec(select(DeviceToken).where(DeviceToken.token == data.token)).first():
             sess.add(DeviceToken(token=data.token, platform=data.platform))
             sess.commit()
-    return {"status": "ok"}
+    return {"status":"ok"}

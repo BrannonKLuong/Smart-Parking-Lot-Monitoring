@@ -10,13 +10,20 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  rtsp:
+    image: aler9/rtsp-simple-server
+    ports:
+      - "8554:8554"    # RTSP ingress/egress
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     depends_on:
       - db
+      - rtsp
     environment:
+      - VIDEO_SOURCE=rtsp://rtsp:8554/stream
       - DATABASE_URL=postgresql://parking_user:parking_pass@db:5432/parking
       - FIREBASE_CRED=/secrets/firebase-sa.json
     volumes:
