@@ -3,6 +3,8 @@ import cv2
 import anyio
 from datetime import datetime, timedelta
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv()   # <-- this will read .env automatically
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse
@@ -18,8 +20,9 @@ import firebase_admin
 from firebase_admin import credentials, messaging, initialize_app
 from pydantic import BaseModel
 from sqlmodel import Session, select
-from .db import DeviceToken
 
+from .db import DeviceToken
+from .notifications import notify_all
 # Initialize Firebase
 cred_path = os.environ.get("FIREBASE_CRED", "")
 if not cred_path or not os.path.isfile(cred_path):
@@ -180,6 +183,7 @@ def frame_generator():
                     broadcast_vacancy({"spot_id":sid, "timestamp":now.isoformat()})
                     notified[sid] = True
                     display_states[sid] = False
+                    notify_all(sid)
                 if not was and is_:
                     broadcast_vacancy({"spot_id":sid, "timestamp":now.isoformat(), "status":"occupied"})
                     display_states[sid] = True
@@ -209,9 +213,18 @@ def webcam_feed():
 
 @app.get("/test_event")
 def test_event():
-    evt = {"spot_id":1, "timestamp":datetime.utcnow().isoformat()}
+    spot_id = 1
+    evt = {"spot_id": spot_id, "timestamp": datetime.utcnow().isoformat()}
     broadcast_vacancy(evt)
-    return {"sent":evt}
+
+    # send the push and capture the result
+    resp: messaging.BatchResponse = notify_all(spot_id)
+    fcm_info = {
+        "success_count": resp.success_count if resp else 0,
+        "failure_count": resp.failure_count if resp else 0
+    }
+
+    return {"sent": evt, "fcm": fcm_info}
 
 class TokenIn(BaseModel):
     token: str
