@@ -27,6 +27,7 @@ services:
       - DATABASE_URL=postgresql://parking_user:parking_pass@db:5432/parking
       - FIREBASE_CRED=/secrets/firebase-sa.json
     volumes:
+      - ./backend:/app
       - ./secrets/firebase-sa.json:/secrets/firebase-sa.json:ro
       - ./static:/static:ro
     ports:
