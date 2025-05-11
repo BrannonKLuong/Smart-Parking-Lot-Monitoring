@@ -8,3 +8,4 @@ sqlmodel
 alembic
 psycopg2-binary
 requests
+firebase-admin

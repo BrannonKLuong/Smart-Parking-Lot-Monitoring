@@ -1,6 +1,6 @@
 services:
   db:
-    image: timescale/timescaledb:latest-pg14
+    image: postgres:15
     environment:
       POSTGRES_USER: parking_user
       POSTGRES_PASSWORD: parking_pass
@@ -8,16 +8,22 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
 
   backend:
-    build: ./backend
-    ports:
-      - "8000:8000"
-    volumes:
-      # Mount the entire backend directory so code, Alembic scripts, and configs all sync correctly
-      - ./backend:/app
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     depends_on:
       - db
+    environment:
+      - DATABASE_URL=postgresql://parking_user:parking_pass@db:5432/parking
+      - FIREBASE_CRED=/secrets/firebase-sa.json
+    volumes:
+      - ./secrets/firebase-sa.json:/secrets/firebase-sa.json:ro
+      - ./static:/static:ro
+    ports:
+      - "8000:8000"
+
 volumes:
-  db_data:
+  pgdata:

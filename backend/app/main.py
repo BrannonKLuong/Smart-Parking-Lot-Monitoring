@@ -13,6 +13,25 @@ from inference.cv_model import detect
 from .spot_logic import SPOTS, refresh_spots
 from .db import engine, Base, SessionLocal, VacancyEvent
 
+import os
+import firebase_admin
+from firebase_admin import credentials, messaging, initialize_app
+from pydantic import BaseModel
+from .db import SessionLocal, DeviceToken, engine
+from sqlalchemy.exc import IntegrityError
+from pydantic import BaseModel
+from sqlmodel import Session, select
+from .db import engine, DeviceToken
+
+
+
+cred_path = os.environ.get("FIREBASE_CRED", "")
+if not cred_path or not os.path.isfile(cred_path):
+    raise RuntimeError(f"Firebase credential not found at {cred_path!r}")
+
+cred = credentials.Certificate(cred_path)
+initialize_app(cred)
+
 # Initialize DB tables
 Base.metadata.create_all(bind=engine)
 
@@ -255,8 +274,6 @@ def frame_generator():
     finally:
         cap.release()
 
-
-
 @app.get("/webcam_feed")
 def webcam_feed():
     return StreamingResponse(
@@ -269,3 +286,15 @@ def test_event():
     evt = {"spot_id":1, "timestamp":datetime.utcnow().isoformat()}
     broadcast_vacancy(evt)
     return {"sent":evt}
+
+class TokenIn(BaseModel):
+    token: str
+    platform: str = "android"
+
+@app.post("/api/register_token")
+async def register_token(data: TokenIn):
+    with Session(engine) as sess:
+        if not sess.exec(select(DeviceToken).where(DeviceToken.token == data.token)).first():
+            sess.add(DeviceToken(token=data.token, platform=data.platform))
+            sess.commit()
+    return {"status": "ok"}

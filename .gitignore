@@ -10,6 +10,7 @@ ui/parking-admin/.angular/cache/
 # --- React / Node ---
 ui/node_modules/
 ui/build/
+secrets/
 # If you want to keep your committed static/ folder, then ignore ui/build only.
 # If you instead want to stop committing static/ entirely, add:
 # static/
