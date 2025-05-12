@@ -29,19 +29,9 @@ export default function SpotsEditor({ initialSpots, videoSize, onSave, setSpots 
   };
 
   const addBox = () => {
-    // --- Start: Robust Logic to find the lowest available UNIQUE ID ---
-    const existingIds = new Set(initialSpots.map(s => s.id)); // Use a Set for efficient lookup
-    let newId = 1;
-    // Loop until a unique ID is found
-    while (existingIds.has(newId)) {
-      newId++;
-    }
-    // At this point, newId is guaranteed to be the lowest available unique positive integer ID
-    // --- End: Robust Logic to find the lowest available UNIQUE ID ---
-
-    // No need for the explicit `if (existingIds.includes(newId))` check here anymore
-    // because the while loop guarantees newId is not in existingIds
-
+    // This logic assigns the next sequential ID based on the current highest ID
+    // This is the behavior you want, where it doesn't reuse IDs.
+    const newId = Math.max(0, ...initialSpots.map(s=>s.id)) + 1;
     const defaultBox = { id:newId, x:20, y:20, w:100, h:80 };
     // Use the spots state from props when adding the new box
     push([...initialSpots, defaultBox]);
@@ -74,7 +64,7 @@ export default function SpotsEditor({ initialSpots, videoSize, onSave, setSpots 
       <div className="flex gap-2 mb-2">
         <button onClick={addBox} className="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Add</button>
         <button onClick={removeBox} disabled={selected==null} className="px-4 py-2 bg-red-600 text-white rounded-lg shadow hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Remove</button>
-        <button onClick={undo} disabled={history.length<2} className="px-4 py-2 bg-yellow-600 text-white rounded-lg shadow hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Undo</button>
+        <button onClick={undo} disabled={history.length<2} className="px-4 py-2 bg-yellow-600 text-white rounded-lg shadow hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus::ring-yellow-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Undo</button>
         <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Save</button>
       </div>
 
