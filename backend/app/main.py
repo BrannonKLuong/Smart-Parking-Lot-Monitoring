@@ -5,18 +5,19 @@ import threading # Import the threading module
 import queue # Import the standard queue module
 import asyncio # Import the asyncio module
 import time # Import time for sleep in thread
+import numpy as np # Import numpy for handling image data
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()   # <-- this will read .env automatically
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from inference.cv_model import detect
-from .spot_logic import SPOTS, refresh_spots
+from .spot_logic import SPOTS, refresh_spots # SPOTS holds bounding boxes
 from .db import engine, Base, SessionLocal, VacancyEvent, DeviceToken
 
 import os
@@ -31,11 +32,8 @@ from .notifications import notify_all
 # Initialize Firebase
 cred_path = os.environ.get("FIREBASE_CRED", "")
 if not cred_path or not os.path.isfile(cred_path):
-    # Restored RuntimeError as requested
+    # Raising RuntimeError here as Firebase is likely required for notifications
     raise RuntimeError(f"Firebase credential not found at {cred_path!r}. FCM notifications will not work.")
-# The 'cred' variable needs to be defined outside the if block if you want to use it later,
-# but initialize_app handles the credential internally after initialization.
-# We still need to load the credential to pass to initialize_app.
 cred = credentials.Certificate(cred_path)
 try:
     initialize_app(cred)
@@ -45,15 +43,7 @@ except ValueError:
 
 
 # Initialize DB tables
-# Check if tables exist before creating to avoid errors on re-runs
-# from sqlalchemy import inspect
-# inspector = inspect(engine)
-# if not inspector.has_table("occupancy") or not inspector.has_table("vacancy_events") or not inspector.has_table("devicetoken"):
-#     print("Creating database tables...")
-Base.metadata.create_all(bind=engine)
-# else:
-#     print("Database tables already exist.")
-
+Base.metadata.create_all(bind=engine) # Corrected typo here
 
 # Paths
 APP_DIR     = Path(__file__).resolve().parent
@@ -147,6 +137,16 @@ async def websocket_endpoint(ws: WebSocket):
 # Initialize this during startup
 event_queue: queue.Queue = None
 
+# Global dictionary to hold the current detection status of each spot
+# This will be updated by the video_processor thread and read by the GET /api/spots endpoint
+current_spot_statuses = {}
+
+# Global variable to hold the latest processed frame with overlays
+latest_processed_frame: np.ndarray = None
+# Lock to protect access to latest_processed_frame
+frame_lock = threading.Lock()
+
+
 def broadcast_vacancy(event: dict):
     print(f"broadcast_vacancy called with event: {event}") # Added logging
     # Add a type field to distinguish this message
@@ -165,11 +165,10 @@ def broadcast_vacancy(event: dict):
     else:
         print("Event queue not initialized.")
 
-def broadcast_config_update(spots_config: list):
-    print(f"broadcast_config_update called with {len(spots_config)} spots.")
+def broadcast_config_update(): # Simplified: no longer takes spots_config as arg
+    print("broadcast_config_update called.")
     message = json.dumps({
-        "type": "config_update",
-        "spots": spots_config
+        "type": "config_update" # <-- Simple message indicating config changed
     })
     if event_queue:
         try:
@@ -206,23 +205,35 @@ async def event_processor():
             # Add a small sleep to prevent a tight loop in case of persistent errors
             await anyio.sleep(1)
 
-
 # Spots API
 @app.get("/api/spots")
 def get_spots():
-    print("GET /api/spots endpoint accessed.") # Added logging
+    print("GET /api/spots endpoint accessed.")
     try:
         raw = json.loads(SPOTS_PATH.read_text())
-        return {"spots": [
-            {"id": s["id"], "x": s["bbox"][0], "y": s["bbox"][1],
-             "w": s["bbox"][2]-s["bbox"][0], "h": s["bbox"][3]-s["bbox"][1]}
-            for s in raw.get("spots", [])
-        ]}
+        # When fetching spots, include the current detection status from current_spot_statuses
+        spots_with_status = []
+        for s in raw.get("spots", []):
+            spot_id = str(s["id"]) # Ensure spot_id is string for consistent keys
+            # Get current status from the global current_spot_statuses dictionary.
+            # Default to False (available/free) if spot_id not found (e.g., very new spot before first detection)
+            is_occupied = current_spot_statuses.get(spot_id, False) # <-- Use current_spot_statuses
+            spots_with_status.append({
+                "id": spot_id,
+                "x": s["bbox"][0],
+                "y": s["bbox"][1],
+                "w": s["bbox"][2]-s["bbox"][0],
+                "h": s["bbox"][3]-s["bbox"][1],
+                "is_available": not is_occupied # is_available is the opposite of is_occupied
+            })
+
+        return {"spots": spots_with_status}
+
     except FileNotFoundError:
         print(f"spots.json not found at {SPOTS_PATH}") # Added logging
         # Return an empty list if spots.json is not found, or handle as an error based on requirements
-        # For now, raising 404 as before:
-        raise HTTPException(status_code=404, detail="Spots configuration not found")
+        # For now, returning empty list as a fallback
+        return {"spots": []}
     except json.JSONDecodeError:
         print(f"Error decoding spots.json at {SPOTS_PATH}") # Added logging
         raise HTTPException(status_code=500, detail="Error reading spots configuration")
@@ -233,22 +244,18 @@ def get_spots():
 
 @app.post("/api/spots")
 async def save_spots(config: dict = Body(...)): # Made async to await broadcast_config_update
-    print("POST /api/spots endpoint accessed.") # Added logging
+    print("POST /api/spots endpoint accessed.")
     try:
         disk = {"spots": [{"id": s["id"],
                            "bbox": [s["x"], s["y"], s["x"]+s["w"], s["y"]+s["h"]]
                           } for s in config.get("spots", [])]}
         SPOTS_PATH.write_text(json.dumps(disk, indent=2))
-        refresh_spots()
-        print("spots.json saved and spots refreshed.") # Added logging
+        print("spots.json saved.") # Added logging
+        refresh_spots() # Call refresh_spots after saving
+        print("spots refreshed.") # Added logging
 
-        # After saving and refreshing spots, broadcast the new configuration
-        # We need to get the updated list of spots in the format expected by the Android app
-        updated_spots_for_broadcast = [
-             {"id": s["id"], "is_available": True} # Assume newly configured spots are initially available
-             for s in disk.get("spots", [])
-        ]
-        broadcast_config_update(updated_spots_for_broadcast)
+        # After saving and refreshing spots, broadcast a simple config update message
+        broadcast_config_update() # <-- Call the simplified broadcast
 
         return {"ok": True}
     except Exception as e:
@@ -277,54 +284,125 @@ def make_capture():
     return cap
 
 
-# Video stream + detection
-def frame_generator():
-    """Generates video frames with detection overlays."""
-    print("frame_generator started.") # Added logging
-    cap = None
+# Video processing and frame generation for streaming and updates
+def video_processor():
+    """Reads video frames, performs detection, updates status, and stores latest frame."""
+    print("video_processor started.") # Updated log message
+    cap = None # Initialize cap outside the try block
+    global current_spot_statuses # Declare global to modify the dictionary
+    global latest_processed_frame # Declare global to modify the frame variable
+
     try:
-        # Attempt to open video capture
+        # --- Catch exceptions during initial capture setup ---
         try:
-            # Add a small delay before attempting to open the video source
-            print("frame_generator: Waiting 5 seconds before opening video source...")
-            time.sleep(5) # Sleep for 5 seconds
-            print("frame_generator: Attempting to open video source now.")
+            print("video_processor: Attempting to open video source now.")
             cap = make_capture()
         except Exception as e:
             print(f"Failed to initialize video capture: {e}")
-            # If capture fails, yield nothing and exit
-            return
+            # Exit the processor if capture fails
+            return # Exit the thread
+        # ----------------------------------------------------
 
         prev_states = {}
         empty_start = {}
         notified = {}
-        display_states = {}
         VACANCY_DELAY = timedelta(seconds=2)
         vehicle_classes = {"car","truck","bus","motorbike","bicycle"}
 
+        # --- Perform initial detection pass ---
+        print("Performing initial detection pass...")
+        ret, frame = cap.read()
+        if not ret:
+             print("Failed to read initial frame from video source. Cannot perform initial detection.")
+             # We can still proceed, but initial statuses will be based on defaults (False/free)
+             # Or choose to exit if initial frame is mandatory
+             # For now, we'll proceed with default False and rely on the loop to eventually get frames
+             initial_vehicle_boxes = []
+        else:
+            initial_results = detect(frame)
+            initial_vehicle_boxes = []
+            for res in initial_results:
+                 boxes = res.boxes.xyxy.tolist()
+                 classes = res.boxes.cls.tolist()
+                 for i, cls_idx in enumerate(classes):
+                     if res.names[cls_idx] in vehicle_classes:
+                         initial_vehicle_boxes.append(boxes[i])
+
+        # Update current_spot_statuses based on initial detection
+        for sid,(sx,sy,sw,sh) in SPOTS.items():
+             occ = any(
+                 sx <= (bx1+bx2)/2 <= sx+sw and sy <= (by1+by2)/2 <= sy+sh
+                 for bx1,by1,bx2,by2 in initial_vehicle_boxes
+             )
+             current_spot_statuses[str(sid)] = occ # Ensure key is string
+
+        print("Initial detection pass complete. Initial spot statuses:", current_spot_statuses)
+
+        # Drawing on the initial frame (for the webcam_feed endpoint)
+        # Use current_spot_statuses for drawing color on the initial frame
+        if ret: # Only draw if initial frame was successfully read
+            frame_with_overlays = frame.copy() # Draw on a copy
+            for sid,(sx,sy,sw,sh) in SPOTS.items():
+                x1,y1 = int(sx),int(sy)
+                x2,y2 = int(sx+sw),int(sy+sh)
+                # Ensure spot_id is string when accessing current_spot_statuses
+                color = (0,0,255) if current_spot_statuses.get(str(sid), False) else (0,255,0) # Red if occupied (True), Green if free (False)
+                cv2.rectangle(frame_with_overlays,(x1,y1),(x2,y2),color,2)
+                cv2.putText(frame_with_overlays,f"Spot {sid}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
+            for bx1,by1,bx2,by2 in initial_vehicle_boxes:
+                cv2.rectangle(frame_with_overlays,(int(bx1),int(by1)),(int(bx2),int(by2)),(0,255,255),2)
+
+            # Store the initial processed frame
+            with frame_lock: # Use the lock when accessing the shared variable
+                latest_processed_frame = frame_with_overlays
+        else:
+             # If initial frame failed, set latest_processed_frame to None or a placeholder
+             with frame_lock:
+                 latest_processed_frame = None # Or a black image np.zeros(...)
+
+        # --- Start the main processing loop ---
         while True:
-            try:
-                ret, frame = cap.read()
-                if not ret:
-                    print("Failed to read frame from video source. Attempting to re-open...")
-                    # Attempt to re-open the capture if it fails
-                    if cap: # Check if cap is not None before releasing
-                        cap.release() # Release the old capture object
-                    print("Attempting to re-open video capture...") # Use direct print in thread
+            # print("Processing frame...") # Uncomment for verbose frame logging
+            # Initialize/remove spots in internal state based on SPOTS
+            # Note: current_spot_statuses is now initialized before the loop
+            for sid in SPOTS:
+                # Ensure spot_id is string when accessing current_spot_statuses
+                prev_states.setdefault(sid, current_spot_statuses.get(str(sid), False)) # Initialize prev_states from current_spot_statuses
+                empty_start.setdefault(sid, None)
+                notified.setdefault(sid, False)
+            for sid in list(prev_states):
+                if sid not in SPOTS:
+                    print(f"Removing state for spot {sid} as it's no longer in SPOTS.") # Added logging
+                    prev_states.pop(sid)
+                    empty_start.pop(sid)
+                    notified.pop(sid)
+                    current_spot_statuses.pop(sid) # Remove status for removed spots
 
-                    try:
-                        # Add a small delay before attempting to re-open
-                        time.sleep(2)
-                        cap = make_capture()
-                        if not cap.isOpened():
-                             print("Failed to re-open video capture. Stopping processing.") # Use direct print
-                             break # Exit the loop if re-opening fails
-                    except Exception as e:
-                         print(f"Error during video capture re-open: {e}. Stopping processing.") # Use direct print
-                         break # Exit the loop if re-opening fails completely
-                    continue # Skip the rest of the loop for this frame
 
-                # --- Frame Processing ---
+            print("Attempting to read frame...") # Added logging before read
+            ret, frame = cap.read()
+            print(f"Frame read result: {ret}") # Added logging after read
+            if not ret:
+                print("Failed to read frame from video source. Attempting to re-open...")
+                # Attempt to re-open the capture if it fails
+                if cap: # Check if cap is not None before releasing
+                    print("Releasing capture object...") # Added logging
+                    cap.release() # Release the old capture object
+                time.sleep(2) # Add a small delay before attempting to re-open
+                print("Attempting to re-open video capture now.")
+                try:
+                    cap = make_capture()
+                    print(f"Capture re-opened successfully: {cap.isOpened()}") # Added logging
+                    if not cap.isOpened():
+                         print("Failed to re-open video capture. Stopping processing.")
+                         break # Exit the loop if re-opening fails
+                except Exception as e:
+                     print(f"Error during video capture re-open: {e}. Stopping processing.")
+                     break # Exit the loop if re-opening fails completely
+                continue # Skip the rest of the loop for this frame
+
+            # --- Frame Processing ---
+            try: # Added try-except block around core processing
                 results = detect(frame)
                 vehicle_boxes = []
                 for res in results:
@@ -348,26 +426,25 @@ def frame_generator():
                     is_ = curr_states.get(sid, False) # Use .get with default for safety
 
                     if was and not is_:
-                        print(f"Spot {sid} changed from occupied to vacant.") # Added logging
+                        print(f"Spot {sid} changed from occupied to vacant.")
                         empty_start[sid] = now
                         notified[sid] = False
 
                     # Check for vacancy notification condition
                     if not is_ and empty_start.get(sid) is not None and not notified.get(sid, False) and now - empty_start[sid] >= VACANCY_DELAY:
-                        print(f"Spot {sid} vacant for {VACANCY_DELAY}, sending notification.") # Added logging
+                        print(f"Spot {sid} vacant for {VACANCY_DELAY}, sending notification.")
                         with SessionLocal() as session:
                             evt = VacancyEvent(timestamp=now, spot_id=sid, camera_id="main")
                             session.add(evt); session.commit()
                         broadcast_vacancy({"spot_id":str(sid), "timestamp":now.isoformat(), "status":"free"}) # Send "free" status
                         notified[sid] = True
-                        display_states[sid] = False
-                        # notify_all(sid) # FCM notification - uncomment if needed
+                        current_spot_statuses[str(sid)] = False # Update global status after sending event
 
                     # Check for occupied status change
                     if not was and is_:
-                        print(f"Spot {sid} changed from vacant to occupied.") # Added logging
+                        print(f"Spot {sid} changed from vacant to occupied.")
                         broadcast_vacancy({"spot_id":str(sid), "timestamp":now.isoformat(), "status":"occupied"}) # Send "occupied" status
-                        display_states[sid] = True
+                        current_spot_statuses[str(sid)] = True # Update global status after sending event
 
                     # Reset timers if spot becomes occupied
                     if is_:
@@ -377,41 +454,37 @@ def frame_generator():
                 prev_states = curr_states.copy()
 
                 # Drawing on the frame (for the webcam_feed endpoint)
+                # Use current_spot_statuses for drawing color
+                frame_with_overlays = frame.copy() # Draw on a copy to avoid modifying the original frame if needed elsewhere
                 for sid,(sx,sy,sw,sh) in SPOTS.items():
                     x1,y1 = int(sx),int(sy)
                     x2,y2 = int(sx+sw),int(sy+sh)
-                    color = (0,0,255) if display_states.get(sid, True) else (0,255,0) # Use .get with default
-                    cv2.rectangle(frame,(x1,y1),(x2,y2),color,2)
-                    cv2.putText(frame,f"Spot {sid}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
+                    # Ensure spot_id is string when accessing current_spot_statuses
+                    color = (0,0,255) if current_spot_statuses.get(str(sid), False) else (0,255,0) # Red if occupied (True), Green if free (False)
+                    cv2.rectangle(frame_with_overlays,(x1,y1),(x2,y2),color,2)
+                    cv2.putText(frame_with_overlays,f"Spot {sid}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
                 for bx1,by1,bx2,by2 in vehicle_boxes:
-                    cv2.rectangle(frame,(int(bx1),int(by1)),(int(bx2),int(by2)),(0,255,255),2)
+                    cv2.rectangle(frame_with_overlays,(int(bx1),int(by1)),(int(bx2),int(by2)),(0,255,255),2)
 
-                success, jpeg = cv2.imencode('.jpg', frame)
-                if not success:
-                    print("Failed to encode frame to JPEG.") # Added logging
-                    # Continue the loop if encoding fails, don't break the stream
-                    continue
-
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+                # Store the latest processed frame in the global variable
+                with frame_lock: # Use the lock when accessing the shared variable
+                    latest_processed_frame = frame_with_overlays
 
             except Exception as e:
-                # Log errors during frame processing but keep the stream alive if possible
-                print(f"Error processing frame: {e}")
-                # Optionally yield a placeholder image or skip the frame
+                 print(f"Error during frame processing loop: {e}") # Log specific error
+
+            # Optional: Add a small sleep to avoid consuming too much CPU if processing is very fast
+            # time.sleep(0.01) # Use time.sleep in a thread
 
     except Exception as e:
-        # Catch any unexpected errors in the generator loop itself
-        print(f"Critical error in frame_generator: {e}")
+        print(f"Error in video_processor: {e}") # Updated log message
     finally:
-        print("frame_generator finished. Releasing capture.") # Added logging
+        print("video_processor finished. Releasing capture.") # Updated log message
         if cap:
             cap.release()
-        # Ensure the stream is terminated properly
-        yield (b'--frame--\r\n') # Yield the closing boundary
 
 
-# Add this startup event to initialize the queue and start the background thread
+# Add this startup event to run the video processing in a background thread
 @app.on_event("startup")
 async def startup_event():
     print("App startup event triggered. Starting video processing background task.")
@@ -421,57 +494,60 @@ async def startup_event():
         event_queue = queue.Queue(maxsize=100) # Set a reasonable maxsize
         print("Event queue initialized.")
 
-        # Use threading to run the synchronous frame_generator in a separate thread
-        thread = threading.Thread(target=frame_generator, daemon=True)
+        # Use threading.Thread to run the synchronous video_processor function in a separate thread
+        # This is appropriate for blocking I/O like video capture/processing.
+        thread = threading.Thread(target=video_processor, daemon=True)
         thread.start()
-        print("frame_generator started in a background thread.") # Added print
+        print("video_processor started in a background thread.")
+
+        # Start the event_processor task in the main async loop
+        asyncio.create_task(event_processor())
+        print("Event processor task scheduled using asyncio.create_task.")
 
     except Exception as e:
-        print(f"Error starting video processing background task: {e}")
-        # With threading, exceptions in the thread won't be caught here directly.
-        # Error handling is needed inside frame_generator itself.
+        print(f"Error during startup event: {e}")
+        # Log the specific sub-exception if it's an ExceptionGroup (from asyncio tasks)
+        # Need to import ExceptionGroup if using it directly
+        # from exceptiongroup import ExceptionGroup # Import ExceptionGroup
+        # if isinstance(e, ExceptionGroup):
+        #     print("Sub-exceptions:")
+        #     for i, sub_e in enumerate(e.exceptions):
+        #         print(f"  {i+1}: {sub_e}")
+        # else:
         print(f"Details of the error: {e}")
 
-# Register the event_processor as a separate startup event handler
-@app.on_event("startup")
-async def start_event_processor_task():
-     print("Starting event processor task.")
-     # Use asyncio.create_task to start the async task directly
-     # This task will run in the main async loop
-     asyncio.create_task(event_processor())
-     print("Event processor task scheduled using asyncio.create_task.")
 
-
-# Video stream endpoint (optional, for viewing the feed with overlays)
+# Video stream endpoint for the webcam feed
 @app.get("/webcam_feed")
 def webcam_feed():
-    print("GET /webcam_feed endpoint accessed.") # Added logging
-    # Note: This endpoint runs its own frame_generator instance.
-    # The background task is what sends WebSocket updates.
-    # This endpoint now correctly calls the frame_generator function
-    # This endpoint is for streaming video, not for the background processing that sends WebSocket messages.
-    # It's likely you don't need to call frame_generator here if the video feed is not used directly.
-    # If you DO need the video feed, this function should yield frames as before.
-    # If not, you could remove or simplify this endpoint.
-    # For now, keeping the original streaming logic:
-    return StreamingResponse(frame_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
+    print("GET /webcam_feed endpoint accessed.")
+
+    def generate_streaming_frames():
+        # This generator yields the latest frame from the background processor
+        while True:
+            with frame_lock: # Acquire the lock before accessing the shared frame
+                frame = latest_processed_frame
+            if frame is not None:
+                success, jpeg = cv2.imencode('.jpg', frame)
+                if success:
+                    # Corrected the boundary ending from \r\n\r\r to \r\n\r\n
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+            # Add a small sleep to control the streaming rate
+            time.sleep(0.03) # Adjust this value to control the frame rate (e.g., 0.03 for ~30fps)
+
+
+    # Return a StreamingResponse that uses the generate_streaming_frames generator
+    return StreamingResponse(generate_streaming_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 
 @app.get("/test_event")
 def test_event():
-    print("GET /test_event endpoint accessed.") # Added logging
+    print("GET /test_event endpoint accessed.")
     spot_id = 1
-    evt = {"spot_id": str(spot_id), "timestamp": datetime.utcnow().isoformat(), "status":"free"} # Added status for testing
-    broadcast_vacancy(evt)
-
-    # send the push and capture the result
-    # resp: messaging.BatchResponse = notify_all(spot_id) # FCM notification - uncomment if needed
-    # fcm_info = {
-    #     "success_count": resp.success_count if resp else 0,
-    #     "failure_count": resp.failure_count if resp else 0
-    # }
-
-    return {"sent": evt} # Removed fcm_info if notify_all is commented
+    # Use broadcast_vacancy to send a test message via WebSocket
+    broadcast_vacancy({"spot_id":str(spot_id), "timestamp":datetime.utcnow().isoformat(), "status":"free"})
+    return {"sent_test_event": True}
 
 
 class TokenIn(BaseModel):
@@ -480,13 +556,13 @@ class TokenIn(BaseModel):
 
 @app.post("/api/register_token")
 async def register_token(data: TokenIn):
-    print("POST /api/register_token endpoint accessed.") # Added logging
+    print("POST /api/register_token endpoint accessed.")
     with Session(engine) as sess:
         if not sess.exec(select(DeviceToken).where(DeviceToken.token == data.token)).first():
             sess.add(DeviceToken(token=data.token, platform=data.platform))
             sess.commit()
-            print(f"Registered new device token: {data.token}") # Added logging
+            print(f"Registered new device token: {data.token}")
         else:
-            print(f"Device token already exists: {data.token}") # Added logging
+            print(f"Device token already exists: {data.token}")
     return {"status":"ok"}
 

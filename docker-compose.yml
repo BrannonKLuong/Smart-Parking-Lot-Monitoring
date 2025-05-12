@@ -14,9 +14,10 @@ services:
     image: aler9/rtsp-simple-server
     ports:
       - "8554:8554"     # RTSP ingress/egress
-    # You might need to add network_mode: host if running on Linux
-    # or specific network configurations for Windows/macOS if default bridging isn't sufficient
-    # For Windows, typically default bridge network works if ffmpeg pushes to localhost:8554
+    volumes:
+      # Mount the configuration file into the container
+      - ./rtsp-simple-server.yml:/app/rtsp-simple-server.yml
+    command: ["/app/rtsp-simple-server", "/app/rtsp-simple-server.yml"] # Tell the server to use the config file
 
   backend:
     build:
@@ -24,19 +25,17 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - db
-      # The backend depends on the rtsp service being available on the Docker network
-      - rtsp
+      - rtsp # Backend depends on the rtsp service
     environment:
-      # Change VIDEO_SOURCE back to the RTSP stream from the rtsp service
-      - VIDEO_SOURCE=rtsp://rtsp:8554/stream
+      # Change VIDEO_SOURCE to point to the new stream path defined in the RTSP config
+      # - VIDEO_SOURCE=rtsp://rtsp:8554/my_stream
+      - VIDEO_SOURCE=/app/videos/test_video.mov
       - DATABASE_URL=postgresql://parking_user:parking_pass@db:5432/parking
       - FIREBASE_CRED=/secrets/firebase-sa.json
     volumes:
       - ./backend:/app
       - ./secrets/firebase-sa.json:/secrets/firebase-sa.json:ro
       - ./static:/static:ro
-      # Remove the videos volume mount as we are not using a local video file
-      # - ./videos:/app/videos:ro
     ports:
       - "8000:8000"
 
