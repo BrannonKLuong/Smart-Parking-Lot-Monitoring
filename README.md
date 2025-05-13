@@ -69,7 +69,7 @@ This project is currently in active development. Significant progress has been m
 1.  **Prerequisites:** Ensure you have Docker and Docker Compose installed. You will also need Node.js and npm (or yarn) for the frontend build.
 2.  **Clone the Repository:**
     ```bash
-    git clone <repository_url>
+    git clone <[repository_url](https://github.com/BrannonKLuong/Smart-Parking-Lot-Monitoring)>
     cd <repository_name>
     ```
 3.  **Configure Environment Variables:** Create a `.env` file at the root directory and potentially in the `backend/` directory based on your project's needs. Ensure sensitive information like database credentials and Firebase paths are configured here and that these `.env` files are listed in your `.gitignore`.
