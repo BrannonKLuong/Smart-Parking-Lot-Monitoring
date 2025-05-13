@@ -55,14 +55,6 @@ This project is currently in active development. Significant progress has been m
 * **Android Communication:** An API endpoint exists for Android devices to register FCM tokens, and the backend uses the Firebase Admin SDK.
 * **Database Integration:** Vacancy events are being recorded in the PostgreSQL database.
 
-## Outstanding Issues
-
-* **Spot ID Assignment:** When adding a new spot after removing a previous one, the new spot receives the next sequential ID instead of reusing the lowest available ID. This is a known behavior that is currently accepted for the project's scope.
-
-## Known Potential Issues
-
-* **Backend Instability:** The backend logs occasionally show `Error in video_processor: 3` (OpenCV errors), causing the video processing thread to restart. While the UI remains functional due to the thread management, this indicates an underlying instability that needs further investigation and resolution for robust, long-term operation.
-
 ## Future Goals
 
 * **Android Notifications:** Implement the full logic for sending push notifications to registered Android devices when a parking spot becomes available.
@@ -72,27 +64,3 @@ This project is currently in active development. Significant progress has been m
 * **Improved Accuracy:** Fine-tune the YOLOv8 model or explore other detection methods to improve accuracy in various lighting and weather conditions.
 * **Deployment:** Prepare the application for deployment to a cloud platform.
 * **User Authentication:** Implement user authentication for the web UI and potentially for the Android app.
-
-## Setup and Installation
-
-**(Note: Detailed setup instructions would typically go here, including prerequisites like Docker and how to clone the repository and run `docker-compose up`. This is a high-level overview.)**
-
-1.  **Prerequisites:** Ensure you have Docker and Docker Compose installed.
-2.  **Clone the Repository:**
-    ```bash
-    git clone <repository_url>
-    cd <repository_name>
-    ```
-3.  **Configure Firebase:** Obtain a Firebase service account key and place it in the `./secrets` directory as `firebase-sa.json`. Update the `FIREBASE_CRED` environment variable in `backend/.env` and `docker-compose.yml` if you use a different path.
-4.  **Build Frontend:** Navigate to the `ui` directory and build the React application.
-    ```bash
-    cd ui
-    npm install # or yarn install
-    npm run build # or yarn build
-    ```
-5.  **Build and Run with Docker Compose:** Navigate back to the root directory and run Docker Compose.
-    ```bash
-    cd ..
-    docker-compose up --build
-    ```
-6.  **Access the Web UI:** Once the containers are running, the frontend should be accessible at `http://localhost:8000`.
