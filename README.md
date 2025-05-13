@@ -58,7 +58,7 @@ This project is currently in active development. Significant progress has been m
 
 ## Future Goals
 
-* **Integrate Live Video Source:** Transition the system to primarily process a live video stream (e.g., from an RTSP IP camera) for real-world application, leveraging the existing architectural capability.
+* **Integrate Live Video Source via IP:** Transition the system to primarily process a live video stream (e.g., from an RTSP IP camera) for real-world application, leveraging the existing architectural capability.
 * **Android Notifications:** Implement the full logic for sending push notifications to registered Android devices when a parking spot becomes available.
 * **Android Video Feed:** Explore methods to display the same video feed processed by the backend within the Android application.
 * **Improved Accuracy:** Fine-tune the YOLOv8 model or explore other detection methods to improve accuracy in various lighting and weather conditions.
