@@ -24,13 +24,13 @@ services:
       dockerfile: Dockerfile
     depends_on:
       - db
-      - rtsp # Backend depends on the rtsp service
+      - rtsp
     environment:
       # Change VIDEO_SOURCE to point to the new stream path defined in the RTSP config
       # - VIDEO_SOURCE=rtsp://rtsp:8554/my_stream
-      - VIDEO_SOURCE=/app/videos/test_video.mov
-      - DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-      - FIREBASE_CRED: /secrets/firebase-sa.json
+      VIDEO_SOURCE: /app/videos/test_video.mov
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      FIREBASE_CRED: /secrets/firebase-sa.json
     volumes:
       - ./backend:/app 
       - ./secrets/firebase-sa.json:/secrets/firebase-sa.json:ro
