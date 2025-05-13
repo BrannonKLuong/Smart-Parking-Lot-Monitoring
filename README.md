@@ -1,5 +1,5 @@
 # Smart Parking Lot Monitoring System
-
+![Smart Parking Lot Demo](assets/smart-parking-lot-demo.gif)
 ## Project Description
 
 This project is a Smart Parking Lot Monitoring System that utilizes video analysis to detect the occupancy status of parking spots. It is built with a Dockerized architecture, featuring a Python backend for video processing and object detection, and a React frontend for a user-friendly interface to visualize the parking lot status and manage spot configurations. The backend also includes basic functionality for communicating with Android devices via Firebase Cloud Messaging (FCM).
