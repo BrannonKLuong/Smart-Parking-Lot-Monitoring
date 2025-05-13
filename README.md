@@ -90,45 +90,35 @@ This project is currently in active development. Significant progress has been m
 
 ## Usage
 
-1.  **Start the System:**
-    Ensure you have followed the [Setup and Installation](#setup-and-installation) steps. Navigate to the root directory of the project in your terminal and run:
+1.  **Start Backend and Database Containers:**
+    Navigate to the root directory of the project and run:
     ```bash
-    docker-compose up --build
+    docker-compose up -d --build db rtsp backend
     ```
-    This will build the necessary images and start the database, RTSP server, and backend services. The frontend will be served by the backend.
-
-2.  **Access the Web UI:**
-    Once the services are running, open your web browser and go to:
+    This starts the database, RTSP server, and backend containers in detached mode.
+2.  **Activate Backend Python Environment:**
+    Navigate to the `backend` directory and activate your Python virtual environment:
+    ```bash
+    cd backend
+    # On Windows PowerShell:
+    .\.venv\Scripts\Activate.ps1
+    # On macOS/Linux:
+    source .venv/bin/activate
     ```
-    http://localhost:8000
+3.  **Run the Backend Application:**
+    From within the activated virtual environment in the `backend` directory, run the FastAPI application:
+    ```bash
+    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
     ```
-    You should see the parking lot monitoring interface with the video feed (initially from `test_video.mov`), spot visualizations, and status updates.
-
-3.  **Using the Spot Editor:**
-    Click the "Edit Spots" button in the web UI to enter the editor mode. You can then:
-    * Click "Add" to create a new rectangular spot bounding box.
-    * Drag the edges or corners of a box to resize it.
-    * Click on a box to select it, then click "Remove" to delete it.
-    * Click "Undo" to revert to the previous configuration state.
-    * Click "Save" to persist your spot configuration to the `spots.json` file in the backend directory. This will also trigger a backend refresh and update the live view.
-
-4.  **Switching to a Live Video Source:**
-    The system is designed to work with live RTSP or other video streams. To switch from the default `test_video.mov` file to a live source:
-    * Open the `docker-compose.yml` file in a text editor.
-    * Locate the `backend` service.
-    * In the `environment` section, comment out the line setting `VIDEO_SOURCE` to the video file:
-        ```yaml
-        # - VIDEO_SOURCE=/app/videos/test_video.mov
-        ```
-    * Uncomment the line for the RTSP stream and update the URL to your specific IP camera or stream source:
-        ```yaml
-        - VIDEO_SOURCE=rtsp://<your_camera_ip>:<port>/<stream_path>
-        ```
-        (Replace `<your_camera_ip>`, `<port>`, and `<stream_path>` with the actual details of your live video stream).
-    * Save the `docker-compose.yml` file.
-    * Restart the backend service (or all services) using Docker Compose:
-        ```bash
-        docker-compose up --build -d backend # Restart only backend
-        # or
-        # docker-compose down && docker-compose up --build # Restart all
-        ```
+4.  **Start the Frontend Development Server:**
+    Open a *new* terminal window, navigate to the `ui` directory, and start the React development server:
+    ```bash
+    cd ui
+    npm start # or yarn start
+    ```
+5.  **Access the Web UI:**
+    Open your web browser and go to:
+    ```
+    http://localhost:3000
+    ```
+    You should see the parking lot monitoring interface. The frontend running on port 3000 will communicate with the backend running (either in Docker or directly via uvicorn) on port 8000.
