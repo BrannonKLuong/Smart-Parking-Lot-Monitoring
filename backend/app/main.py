@@ -9,6 +9,7 @@ import numpy as np
 from datetime import datetime, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
+import traceback
 load_dotenv()
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body, HTTPException
@@ -24,9 +25,9 @@ import os
 import firebase_admin
 from firebase_admin import credentials, messaging, initialize_app
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from .db import engine, Base, DeviceToken
 
-from .db import DeviceToken
+from sqlmodel import SQLModel, Session, select
 from .notifications import notify_all
 
 cred_path = os.environ.get("FIREBASE_CRED", "")
@@ -38,6 +39,17 @@ try:
     print("Firebase app initialized successfully.")
 except ValueError:
     print("Firebase app already initialized.")
+
+
+def create_db_and_tables():
+    print("Creating database tables...")
+    Base.metadata.create_all(bind=engine)  # For SQLAlchemy Base models (Occupancy, VacancyEvent)
+    SQLModel.metadata.create_all(bind=engine) # For SQLModel models (DeviceToken)
+    print("Database tables creation attempt finished.")
+    # You can add the inspect logic here too if you want to see tables on every startup
+    # from sqlalchemy import inspect
+    # insp = inspect(engine)
+    # print("Tables now in database:", insp.get_table_names())
 
 Base.metadata.create_all(bind=engine)
 
@@ -255,110 +267,116 @@ def make_capture():
 # Video processing and frame generation for streaming and updates
 def video_processor():
     """Reads video frames, performs detection, updates status, and stores latest frame."""
-    print("video_processor started.") 
-    cap = None 
-    global current_spot_statuses 
-    global latest_processed_frame 
+    print("video_processor started.")
+    cap = None
+    global current_spot_statuses
+    global latest_processed_frame
 
     try:
-
         try:
             print("video_processor: Attempting to open video source now.")
             cap = make_capture()
         except Exception as e:
             print(f"Failed to initialize video capture: {e}")
+            return # Exit the thread if capture fails
 
-        prev_states = {}
-        empty_start = {}
-        notified = {}
-        VACANCY_DELAY = timedelta(seconds=2)
-        vehicle_classes = {"car","truck","bus","motorbike","bicycle"}
+        prev_states = {}  # Stores {spot_id_int: is_occupied_bool}
+        empty_start = {}  # Stores {spot_id_str: datetime_obj_when_spot_became_empty}
+        notified = {}     # Stores {spot_id_str: bool_if_notification_sent_for_current_vacancy}
+        VACANCY_DELAY = timedelta(seconds=2) # Or your preferred delay
+        vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"}
 
         # --- Perform initial detection pass ---
         print("Performing initial detection pass...")
         ret, frame = cap.read()
         if not ret:
-             print("Failed to read initial frame from video source. Cannot perform initial detection.")
-             initial_vehicle_boxes = []
+            print("Failed to read initial frame. Cannot perform initial detection.")
+            initial_vehicle_boxes = []
         else:
             initial_results = detect(frame)
             initial_vehicle_boxes = []
             for res in initial_results:
-                 boxes = res.boxes.xyxy.tolist()
-                 classes = res.boxes.cls.tolist()
-                 for i, cls_idx in enumerate(classes):
-                     if res.names[cls_idx] in vehicle_classes:
-                         initial_vehicle_boxes.append(boxes[i])
+                boxes = res.boxes.xyxy.tolist()
+                classes = res.boxes.cls.tolist()
+                for i, cls_idx in enumerate(classes):
+                    if res.names[cls_idx] in vehicle_classes:
+                        initial_vehicle_boxes.append(boxes[i])
 
-        # Update current_spot_statuses based on initial detection
-        for sid,(sx,sy,sw,sh) in SPOTS.items():
-             occ = any(
-                 sx <= (bx1+bx2)/2 <= sx+sw and sy <= (by1+by2)/2 <= sy+sh
-                 for bx1,by1,bx2,by2 in initial_vehicle_boxes
-             )
-             current_spot_statuses[str(sid)] = occ # Ensure key is string
+        # Initialize current_spot_statuses, prev_states, and notified based on SPOTS and initial detection
+        # Ensure SPOTS uses integer IDs as keys if sid_int below is to be used directly
+        for sid_int, (sx, sy, sw, sh) in SPOTS.items(): # Assuming SPOTS keys are integers
+            sid_str = str(sid_int)
+            is_initially_occupied = any(
+                sx <= (bx1 + bx2) / 2 <= sx + sw and sy <= (by1 + by2) / 2 <= sy + sh
+                for bx1, by1, bx2, by2 in initial_vehicle_boxes
+            )
+            current_spot_statuses[sid_str] = is_initially_occupied
+            prev_states[sid_int] = is_initially_occupied
+            notified[sid_str] = False # Initially, no notifications sent for the current session
+            if not is_initially_occupied:
+                empty_start[sid_str] = datetime.utcnow() # If starts empty, timer starts now
+            else:
+                empty_start[sid_str] = None
+
 
         print("Initial detection pass complete. Initial spot statuses:", current_spot_statuses)
-
-        # Drawing on the initial frame (for the webcam_feed endpoint)
-        # Use current_spot_statuses for drawing color on the initial frame
-        if ret: 
-            frame_with_overlays = frame.copy() 
-            for sid,(sx,sy,sw,sh) in SPOTS.items():
-                x1,y1 = int(sx),int(sy)
-                x2,y2 = int(sx+sw),int(sy+sh)
-                color = (0,0,255) if current_spot_statuses.get(str(sid), False) else (0,255,0) # Red if occupied (True), Green if free (False)
+        # (Initial frame drawing logic as you had it)
+        if ret:
+            frame_with_overlays = frame.copy()
+            for sid_int, (sx, sy, sw, sh) in SPOTS.items():
+                sid_str = str(sid_int)
+                x1, y1 = int(sx), int(sy)
+                x2, y2 = int(sx + sw), int(sy + sh)
+                color = (0,0,255) if current_spot_statuses.get(sid_str, False) else (0,255,0)
                 cv2.rectangle(frame_with_overlays,(x1,y1),(x2,y2),color,2)
-                cv2.putText(frame_with_overlays,f"Spot {sid}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
+                cv2.putText(frame_with_overlays,f"Spot {sid_str}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
             for bx1,by1,bx2,by2 in initial_vehicle_boxes:
                 cv2.rectangle(frame_with_overlays,(int(bx1),int(by1)),(int(bx2),int(by2)),(0,255,255),2)
-
-            # Store the initial processed frame
-            with frame_lock: 
+            with frame_lock:
                 latest_processed_frame = frame_with_overlays
         else:
-             with frame_lock:
-                 latest_processed_frame = None # Or a black image np.zeros(...)
+            with frame_lock:
+                latest_processed_frame = None
+        # --- End of Initial Pass Adjustments ---
 
-        # --- Start the main processing loop ---
         while True:
-            # Initialize/remove spots in internal state based on SPOTS
-            # Note: current_spot_statuses is now initialized before the loop
-            for sid in SPOTS:
-                # Ensure spot_id is string when accessing current_spot_statuses
-                prev_states.setdefault(sid, current_spot_statuses.get(str(sid), False)) # Initialize prev_states from current_spot_statuses
-                empty_start.setdefault(sid, None)
-                notified.setdefault(sid, False)
-            for sid in list(prev_states):
-                if sid not in SPOTS:
-                    print(f"Removing state for spot {sid} as it's no longer in SPOTS.") 
-                    prev_states.pop(sid)
-                    empty_start.pop(sid)
-                    notified.pop(sid)
-                    current_spot_statuses.pop(sid) 
+            # Dynamic spot list update (remove deleted spots from internal state)
+            # Ensure internal state dicts only contain current spots from SPOTS
+            current_spot_ids_int = set(SPOTS.keys())
+            for sid_int_key in list(prev_states.keys()):
+                if sid_int_key not in current_spot_ids_int:
+                    print(f"Removing state for spot {sid_int_key} as it's no longer in SPOTS.")
+                    prev_states.pop(sid_int_key, None)
+                    empty_start.pop(str(sid_int_key), None)
+                    notified.pop(str(sid_int_key), None)
+                    current_spot_statuses.pop(str(sid_int_key), None)
+            
+            # Add new spots to internal state if SPOTS updated
+            for sid_int_key in current_spot_ids_int:
+                if sid_int_key not in prev_states: # New spot found
+                    print(f"Initializing state for new spot {sid_int_key}.")
+                    # Initialize based on a quick current detection, or default to free
+                    # For simplicity, let's default new spots to appear free until first proper detection pass
+                    # Or better, do a quick check if possible, otherwise default
+                    prev_states[sid_int_key] = False # Assume free initially
+                    current_spot_statuses[str(sid_int_key)] = False
+                    empty_start[str(sid_int_key)] = datetime.utcnow()
+                    notified[str(sid_int_key)] = False
 
 
             ret, frame = cap.read()
             if not ret:
+                # ... (your existing frame read error handling and re-open logic) ...
                 print("Failed to read frame from video source. Attempting to re-open...")
-                if cap:
-                    print("Releasing capture object...") 
-                    cap.release() 
+                if cap: cap.release()
                 time.sleep(2)
-                print("Attempting to re-open video capture now.")
                 try:
                     cap = make_capture()
-                    print(f"Capture re-opened successfully: {cap.isOpened()}") 
-                    if not cap.isOpened():
-                         print("Failed to re-open video capture. Stopping processing.")
-                         break 
-                except Exception as e:
-                     print(f"Error during video capture re-open: {e}. Stopping processing.")
-                     break 
-                continue 
+                    if not cap.isOpened(): print("Failed to re-open. Stopping."); break
+                except Exception as e: print(f"Error re-opening: {e}. Stopping."); break
+                continue
 
-            # --- Frame Processing ---
-            try: 
+            try:
                 results = detect(frame)
                 vehicle_boxes = []
                 for res in results:
@@ -368,81 +386,108 @@ def video_processor():
                         if res.names[cls_idx] in vehicle_classes:
                             vehicle_boxes.append(boxes[i])
 
-                curr_states = {}
-                for sid,(sx,sy,sw,sh) in SPOTS.items():
-                    occ = any(
-                        sx <= (bx1+bx2)/2 <= sx+sw and sy <= (by1+by2)/2 <= sy+sh
-                        for bx1,by1,bx2,by2 in vehicle_boxes
+                # This curr_states should be {int: bool} to match prev_states
+                curr_states_detected_occupied = {} # Spot ID (int) -> is_occupied (bool)
+                for sid_int, (sx, sy, sw, sh) in SPOTS.items(): # Assuming SPOTS keys are integers
+                    is_occupied_now = any(
+                        sx <= (bx1 + bx2) / 2 <= sx + sw and sy <= (by1 + by2) / 2 <= sy + sh
+                        for bx1, by1, bx2, by2 in vehicle_boxes
                     )
-                    curr_states[sid] = occ
+                    curr_states_detected_occupied[sid_int] = is_occupied_now
 
                 now = datetime.utcnow()
-                for sid in SPOTS:
-                    was = prev_states.get(sid, False) 
-                    is_ = curr_states.get(sid, False) 
 
-                    if was and not is_:
-                        print(f"Spot {sid} changed from occupied to vacant.")
-                        empty_start[sid] = now
-                        notified[sid] = False
+                for sid_int in SPOTS: # Iterate using integer keys from SPOTS
+                    sid_str = str(sid_int) # For string-keyed dictionaries like current_spot_statuses, empty_start, notified
 
-                    # Check for vacancy notification condition
-                    if not is_ and empty_start.get(sid) is not None and not notified.get(sid, False) and now - empty_start[sid] >= VACANCY_DELAY:
-                        print(f"Spot {sid} vacant for {VACANCY_DELAY}, sending notification.")
-                        with SessionLocal() as session:
-                            evt = VacancyEvent(timestamp=now, spot_id=sid, camera_id="main")
-                            session.add(evt); session.commit()
-                        broadcast_vacancy({"spot_id":str(sid), "timestamp":now.isoformat(), "status":"free"}) # Send "free" status
-                        notified[sid] = True
-                        current_spot_statuses[str(sid)] = False
+                    # Get current and previous occupation status
+                    # Ensure prev_states has an entry for sid_int (should be handled by initialization)
+                    was_occupied = prev_states.get(sid_int, False) # Default to False if somehow missing
+                    is_occupied = curr_states_detected_occupied.get(sid_int, False)
 
-                    # Check for occupied status change
-                    if not was and is_:
-                        print(f"Spot {sid} changed from vacant to occupied.")
-                        broadcast_vacancy({"spot_id":str(sid), "timestamp":now.isoformat(), "status":"occupied"}) # Send "occupied" status
-                        current_spot_statuses[str(sid)] = True 
+                    # **** START: Revised Spam Prevention Logic ****
+                    if was_occupied and not is_occupied:  # Transition: Occupied -> Free
+                        print(f"Spot {sid_str} changed from occupied to vacant.")
+                        empty_start[sid_str] = now
+                        notified[sid_str] = False  # Reset notification status, eligible for new notification
+                        current_spot_statuses[sid_str] = False
+                        broadcast_vacancy({"spot_id": sid_str, "timestamp": now.isoformat(), "status": "free"})
+                    
+                    elif not was_occupied and is_occupied:  # Transition: Free -> Occupied
+                        print(f"Spot {sid_str} changed from vacant to occupied.")
+                        empty_start[sid_str] = None  # Clear the timer
+                        # notified[sid_str] remains as it was (likely True if it was free long enough to be notified)
+                        # It will be reset to False only when it becomes free again.
+                        current_spot_statuses[sid_str] = True
+                        broadcast_vacancy({"spot_id": sid_str, "timestamp": now.isoformat(), "status": "occupied"})
 
-                    # Reset timers if spot becomes occupied
-                    if is_:
-                        empty_start[sid] = None
-                        notified[sid] = False
+                    # Check for sending vacancy notification
+                    if not is_occupied and empty_start.get(sid_str) and not notified.get(sid_str, False):
+                        if (now - empty_start[sid_str]) >= VACANCY_DELAY:
+                            print(f"Spot {sid_str} confirmed vacant for {VACANCY_DELAY}, sending notification.")
+                            
+                            with SessionLocal() as session_db:
+                                evt = VacancyEvent(timestamp=now, spot_id=sid_int, camera_id="main") # Use sid_int for DB if it's integer type
+                                session_db.add(evt)
+                                session_db.commit()
+                            
+                            # WebSocket broadcast for "free" status was already done when it transitioned
+                            # If you need to re-broadcast here, you can, but it might be redundant.
 
-                prev_states = curr_states.copy()
+                            try:
+                                notify_response = notify_all(spot_id=sid_int) # Use integer spot ID
+                                print(f"Attempted to send FCM notification for spot {sid_str}.")
+                                if notify_response:
+                                    print(f"  FCM Send Summary: Successes={notify_response.get('success_count', 0)}, Failures={notify_response.get('failure_count', 0)}")
+                                    if notify_response.get('failure_count', 0) > 0:
+                                        for resp_details in notify_response.get('responses', []):
+                                            if not resp_details.get('success'):
+                                                print(f"    Failed send detail: {resp_details.get('exception')}")
+                                else:
+                                    print("  notify_all returned None or an unexpected response.")
+                            except Exception as e:
+                                print(f"Exception caught in main.py while trying to call notify_all: {e}")
+                                print(traceback.format_exc())
+                            
+                            notified[sid_str] = True # Mark as notified for this specific vacancy event
+                    # **** END: Revised Spam Prevention Logic ****
 
-                # Drawing on the frame (for the webcam_feed endpoint)
-                # Use current_spot_statuses for drawing color
-                frame_with_overlays = frame.copy() # Draw on a copy to avoid modifying the original frame if needed elsewhere
-                for sid,(sx,sy,sw,sh) in SPOTS.items():
-                    x1,y1 = int(sx),int(sy)
-                    x2,y2 = int(sx+sw),int(sy+sh)
-                    # Ensure spot_id is string when accessing current_spot_statuses
-                    color = (0,0,255) if current_spot_statuses.get(str(sid), False) else (0,255,0) # Red if occupied (True), Green if free (False)
-                    cv2.rectangle(frame_with_overlays,(x1,y1),(x2,y2),color,2)
-                    cv2.putText(frame_with_overlays,f"Spot {sid}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
-                for bx1,by1,bx2,by2 in vehicle_boxes:
-                    cv2.rectangle(frame_with_overlays,(int(bx1),int(by1)),(int(bx2),int(by2)),(0,255,255),2)
+                prev_states = curr_states_detected_occupied.copy() # Update prev_states for the next iteration
 
-        
-                with frame_lock: #
+                # Drawing on the frame
+                frame_with_overlays = frame.copy()
+                for sid_int_draw, (sx_draw, sy_draw, sw_draw, sh_draw) in SPOTS.items():
+                    sid_str_draw = str(sid_int_draw)
+                    x1, y1 = int(sx_draw), int(sy_draw)
+                    x2, y2 = int(sx_draw + sw_draw), int(sy_draw + sh_draw)
+                    color = (0, 0, 255) if current_spot_statuses.get(sid_str_draw, False) else (0, 255, 0)
+                    cv2.rectangle(frame_with_overlays, (x1, y1), (x2, y2), color, 2)
+                    cv2.putText(frame_with_overlays, f"Spot {sid_str_draw}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                for bx1, by1, bx2, by2 in vehicle_boxes:
+                    cv2.rectangle(frame_with_overlays, (int(bx1), int(by1)), (int(bx2), int(by2)), (0, 255, 255), 2)
+
+                with frame_lock:
                     latest_processed_frame = frame_with_overlays
 
             except Exception as e:
-                 print(f"Error during frame processing loop: {e}") # Log specific error
-
-
+                print(f"Error during frame processing loop: {e}")
+                print(traceback.format_exc()) # Print full traceback for frame processing errors
 
     except Exception as e:
-        print(f"Error in video_processor: {e}") 
+        print(f"Outer error in video_processor: {e}")
+        print(traceback.format_exc()) # Print full traceback for outer errors
     finally:
-        print("video_processor finished. Releasing capture.") 
+        print("video_processor finished. Releasing capture.")
         if cap:
             cap.release()
+
 
 
 # Add this startup event to run the video processing in a background thread
 @app.on_event("startup")
 async def startup_event():
     print("App startup event triggered. Starting video processing background task.")
+    create_db_and_tables() 
     global event_queue # Only need to declare global for the queue
     try:
         event_queue = queue.Queue(maxsize=100) 
