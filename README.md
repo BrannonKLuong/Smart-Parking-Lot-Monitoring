@@ -69,10 +69,10 @@ This project is currently in active development. Significant progress has been m
 1.  **Prerequisites:** Ensure you have Docker and Docker Compose installed. You will also need Node.js and npm (or yarn) for the frontend build.
 2.  **Clone the Repository:**
     ```bash
-    git clone <[repository_url](https://github.com/BrannonKLuong/Smart-Parking-Lot-Monitoring)>
-    cd <repository_name>
+    git clone https://github.com/BrannonKLuong/Smart-Parking-Lot-Monitoring
+    cd Smart-Parking-Lot-Monitoring
     ```
-3.  **Configure Environment Variables:** Create a `.env` file at the root directory and potentially in the `backend/` directory based on your project's needs. Ensure sensitive information like database credentials and Firebase paths are configured here and that these `.env` files are listed in your `.gitignore`.
+3.  **Configure Environment Variables:** Create a `.env` file at the root directory and potentially in the `backend/` directory based on your project's needs.
 4.  **Configure Firebase:** Obtain a Firebase service account key (`firebase-sa.json`) and place it in a secure location, ideally outside the publicly accessible parts of your repository (as configured in your `docker-compose.yml` secrets volume). Update the `FIREBASE_CRED` environment variable to point to this file.
 5.  **Build Frontend:** Navigate to the `ui` directory and build the React application.
     ```bash
@@ -86,3 +86,49 @@ This project is currently in active development. Significant progress has been m
     docker-compose up --build
     ```
 7.  **Access the Web UI:** Once the containers are running, the frontend should be accessible at `http://localhost:8000`.
+
+
+## Usage
+
+1.  **Start the System:**
+    Ensure you have followed the [Setup and Installation](#setup-and-installation) steps. Navigate to the root directory of the project in your terminal and run:
+    ```bash
+    docker-compose up --build
+    ```
+    This will build the necessary images and start the database, RTSP server, and backend services. The frontend will be served by the backend.
+
+2.  **Access the Web UI:**
+    Once the services are running, open your web browser and go to:
+    ```
+    http://localhost:8000
+    ```
+    You should see the parking lot monitoring interface with the video feed (initially from `test_video.mov`), spot visualizations, and status updates.
+
+3.  **Using the Spot Editor:**
+    Click the "Edit Spots" button in the web UI to enter the editor mode. You can then:
+    * Click "Add" to create a new rectangular spot bounding box.
+    * Drag the edges or corners of a box to resize it.
+    * Click on a box to select it, then click "Remove" to delete it.
+    * Click "Undo" to revert to the previous configuration state.
+    * Click "Save" to persist your spot configuration to the `spots.json` file in the backend directory. This will also trigger a backend refresh and update the live view.
+
+4.  **Switching to a Live Video Source:**
+    The system is designed to work with live RTSP or other video streams. To switch from the default `test_video.mov` file to a live source:
+    * Open the `docker-compose.yml` file in a text editor.
+    * Locate the `backend` service.
+    * In the `environment` section, comment out the line setting `VIDEO_SOURCE` to the video file:
+        ```yaml
+        # - VIDEO_SOURCE=/app/videos/test_video.mov
+        ```
+    * Uncomment the line for the RTSP stream and update the URL to your specific IP camera or stream source:
+        ```yaml
+        - VIDEO_SOURCE=rtsp://<your_camera_ip>:<port>/<stream_path>
+        ```
+        (Replace `<your_camera_ip>`, `<port>`, and `<stream_path>` with the actual details of your live video stream).
+    * Save the `docker-compose.yml` file.
+    * Restart the backend service (or all services) using Docker Compose:
+        ```bash
+        docker-compose up --build -d backend # Restart only backend
+        # or
+        # docker-compose down && docker-compose up --build # Restart all
+        ```
