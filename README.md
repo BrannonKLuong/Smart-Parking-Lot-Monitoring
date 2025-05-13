@@ -55,20 +55,34 @@ This project is currently in active development. Significant progress has been m
 * **Android Communication:** An API endpoint exists for Android devices to register FCM tokens, and the backend uses the Firebase Admin SDK.
 * **Database Integration:** Vacancy events are being recorded in the PostgreSQL database.
 
-## Outstanding Issues
-
-* **Spot ID Assignment:** When adding a new spot after removing a previous one, the new spot receives the next sequential ID instead of reusing the lowest available ID. This is a known behavior that is currently accepted for the project's scope.
-
-## Known Potential Issues
-
-* **Backend Instability:** The backend logs occasionally show `Error in video_processor: 3` (OpenCV errors), causing the video processing thread to restart. While the UI remains functional due to the thread management, this indicates an underlying instability that needs further investigation and resolution for robust, long-term operation.
 
 ## Future Goals
 
 * **Integrate Live Video Source:** Transition the system to primarily process a live video stream (e.g., from an RTSP IP camera) for real-world application, leveraging the existing architectural capability.
 * **Android Notifications:** Implement the full logic for sending push notifications to registered Android devices when a parking spot becomes available.
 * **Android Video Feed:** Explore methods to display the same video feed processed by the backend within the Android application.
-* **Backend Stability:** Diagnose and fix the recurring OpenCV errors in the video processing thread to improve system reliability.
 * **Improved Accuracy:** Fine-tune the YOLOv8 model or explore other detection methods to improve accuracy in various lighting and weather conditions.
 * **Deployment:** Prepare the application for deployment to a cloud platform.
-* **User Authentication:** Implement user authentication for the web UI and potentially for the Android app.
+
+## Setup and Installation
+
+1.  **Prerequisites:** Ensure you have Docker and Docker Compose installed. You will also need Node.js and npm (or yarn) for the frontend build.
+2.  **Clone the Repository:**
+    ```bash
+    git clone <repository_url>
+    cd <repository_name>
+    ```
+3.  **Configure Environment Variables:** Create a `.env` file at the root directory and potentially in the `backend/` directory based on your project's needs. Ensure sensitive information like database credentials and Firebase paths are configured here and that these `.env` files are listed in your `.gitignore`.
+4.  **Configure Firebase:** Obtain a Firebase service account key (`firebase-sa.json`) and place it in a secure location, ideally outside the publicly accessible parts of your repository (as configured in your `docker-compose.yml` secrets volume). Update the `FIREBASE_CRED` environment variable to point to this file.
+5.  **Build Frontend:** Navigate to the `ui` directory and build the React application.
+    ```bash
+    cd ui
+    npm install # or yarn install
+    npm run build # or yarn build
+    ```
+6.  **Build and Run with Docker Compose:** Navigate back to the root directory and run Docker Compose.
+    ```bash
+    cd ..
+    docker-compose up --build
+    ```
+7.  **Access the Web UI:** Once the containers are running, the frontend should be accessible at `http://localhost:8000`.
