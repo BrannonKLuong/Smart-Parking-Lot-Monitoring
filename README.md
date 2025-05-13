@@ -34,7 +34,7 @@ The system employs a microservices-like architecture orchestrated with Docker Co
 
 ## Features
 
-* Real-time video feed display in the web UI (currently from a video file for development speed).
+* Real-time video feed display in the web UI.
 * Automatic detection of vehicles and parking spot occupancy using YOLOv8.
 * Visual representation of parking spots and their status (occupied/free) on the video feed in the web UI.
 * Real-time updates of spot status and free spot count in the web UI.
@@ -42,25 +42,33 @@ The system employs a microservices-like architecture orchestrated with Docker Co
 * Web-based editor to add, remove, and resize parking spot bounding boxes.
 * Backend endpoint for Android devices to register FCM tokens.
 * Basic Android app emulator functionality showing spot counts and updates (based on user commentary).
-* **Capability for handling live video streams (tested in previous versions).**
+* **The system architecture is designed to handle live video streams (RTSP/RTMP), and this capability has been tested in previous iterations. The current default configuration uses a local video file (`test_video.mov`) for faster development and testing cycles.**
 
 ## Progress and Current Status
 
 This project is currently in active development. Significant progress has been made on the core functionality:
 
 * **Docker Environment:** Successfully configured and running containers for the backend and database.
-* **Video Processing:** The backend successfully processes a video file (`test_video.mov`) and serves a stream to the frontend.
+* **Video Processing:** The backend successfully processes the video file (`test_video.mov`) and serves a stream to the frontend.
 * **Frontend Display:** The React frontend correctly displays the video feed and individual spot tiles with accurate status (occupied/free) and counters. Notifications for spot changes are displayed and clear after a duration.
 * **Spot Configuration:** The web editor allows for adding, removing, and resizing parking spots, with changes persisted (though spot ID assignment has a known behavior - see Outstanding Issues).
 * **Android Communication:** An API endpoint exists for Android devices to register FCM tokens, and the backend uses the Firebase Admin SDK.
 * **Database Integration:** Vacancy events are being recorded in the PostgreSQL database.
 
+## Outstanding Issues
+
+* **Spot ID Assignment:** When adding a new spot after removing a previous one, the new spot receives the next sequential ID instead of reusing the lowest available ID. This is a known behavior that is currently accepted for the project's scope.
+
+## Known Potential Issues
+
+* **Backend Instability:** The backend logs occasionally show `Error in video_processor: 3` (OpenCV errors), causing the video processing thread to restart. While the UI remains functional due to the thread management, this indicates an underlying instability that needs further investigation and resolution for robust, long-term operation.
+
 ## Future Goals
 
+* **Integrate Live Video Source:** Transition the system to primarily process a live video stream (e.g., from an RTSP IP camera) for real-world application, leveraging the existing architectural capability.
 * **Android Notifications:** Implement the full logic for sending push notifications to registered Android devices when a parking spot becomes available.
 * **Android Video Feed:** Explore methods to display the same video feed processed by the backend within the Android application.
 * **Backend Stability:** Diagnose and fix the recurring OpenCV errors in the video processing thread to improve system reliability.
-* **Live Video Source:** Transition back to processing a live video stream (e.g., RTSP from an IP camera) for real-world application.
 * **Improved Accuracy:** Fine-tune the YOLOv8 model or explore other detection methods to improve accuracy in various lighting and weather conditions.
 * **Deployment:** Prepare the application for deployment to a cloud platform.
 * **User Authentication:** Implement user authentication for the web UI and potentially for the Android app.
