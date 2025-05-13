@@ -2,9 +2,9 @@ services:
   db:
     image: postgres:15
     environment:
-      POSTGRES_USER: parking_user
-      POSTGRES_PASSWORD: parking_pass
-      POSTGRES_DB: parking
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
@@ -13,11 +13,10 @@ services:
   rtsp:
     image: aler9/rtsp-simple-server
     ports:
-      - "8554:8554"     # RTSP ingress/egress
+      - "8554:8554"    
     volumes:
-      # Mount the configuration file into the container
       - ./rtsp-simple-server.yml:/app/rtsp-simple-server.yml
-    command: ["/app/rtsp-simple-server", "/app/rtsp-simple-server.yml"] # Tell the server to use the config file
+    command: ["/app/rtsp-simple-server", "/app/rtsp-simple-server.yml"]
 
   backend:
     build:
@@ -30,14 +29,14 @@ services:
       # Change VIDEO_SOURCE to point to the new stream path defined in the RTSP config
       # - VIDEO_SOURCE=rtsp://rtsp:8554/my_stream
       - VIDEO_SOURCE=/app/videos/test_video.mov
-      - DATABASE_URL=postgresql://parking_user:parking_pass@db:5432/parking
-      - FIREBASE_CRED=/secrets/firebase-sa.json
+      - DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      - FIREBASE_CRED: /secrets/firebase-sa.json
     volumes:
-      - ./backend:/app
+      - ./backend:/app 
       - ./secrets/firebase-sa.json:/secrets/firebase-sa.json:ro
-      - ./static:/static:ro
+      - ./static:/static:ro # Mount static files for the frontend
     ports:
-      - "8000:8000"
+      - "8000:8000" 
 
 volumes:
   pgdata:

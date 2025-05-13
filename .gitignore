@@ -6,7 +6,7 @@
 .aws-sam/
 backend/.aws-sam/
 ui/parking-admin/.angular/cache/
-
+.env
 # --- React / Node ---
 ui/node_modules/
 ui/build/
