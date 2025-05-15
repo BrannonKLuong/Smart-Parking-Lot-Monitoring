@@ -1,10 +1,8 @@
-# In notifications.py
-
 from sqlalchemy import select
 from sqlmodel import Session
 from firebase_admin import messaging, exceptions
-import traceback # Make sure traceback is imported
-from .db import engine, DeviceToken # Make sure DeviceToken is imported
+import traceback #
+from .db import engine, DeviceToken
 
 def notify_all(spot_id: int):
     """Send an FCM notification to all registered device tokens by sending individually."""
@@ -14,7 +12,6 @@ def notify_all(spot_id: int):
     try:
         with Session(engine) as sess:
             db_rows = sess.exec(select(DeviceToken)).all()
-            print(f"[notify_all] Found {len(db_rows)} rows from DB.")
 
             if not db_rows:
                 print("[notify_all] No rows found in DB. Cannot send notifications.")
@@ -26,18 +23,13 @@ def notify_all(spot_id: int):
                     continue
                 
                 dt_instance = row[0] 
-                print(f"[notify_all] Processing item from row: {dt_instance} (type: {type(dt_instance)})")
-
                 if isinstance(dt_instance, DeviceToken) and \
                    hasattr(dt_instance, 'token') and \
                    isinstance(dt_instance.token, str) and \
                    dt_instance.token.strip():
                     device_tokens_str_list.append(dt_instance.token)
-                    print(f"[notify_all] Successfully extracted token: {dt_instance.token}")
                 else:
                     print(f"[notify_all] Warning: Expected DeviceToken instance in row, but got {type(dt_instance)}, or token attribute is invalid.")
-                    if isinstance(dt_instance, DeviceToken):
-                         print(f"  DeviceToken instance details: token attribute = {getattr(dt_instance, 'token', 'NOT_FOUND')}")
             
             print(f"[notify_all] Extracted {len(device_tokens_str_list)} valid string tokens: {device_tokens_str_list}")
 
@@ -49,20 +41,18 @@ def notify_all(spot_id: int):
         failure_count = 0
         individual_responses = []
 
+        # --- Create a new Message for each token --- #
         for token_str in device_tokens_str_list:
-            # Create a new Message for each token
             message = messaging.Message(
                 notification=messaging.Notification(
                     title="Parking Spot Available!",
                     body=f"Spot {spot_id} is now available.",
                 ),
-                token=token_str, # Target this specific token
+                token=token_str, 
             )
             
-            print(f"[notify_all] Preparing to send FCM message to token: {token_str}")
             try:
-                response_str = messaging.send(message) # Use messaging.send() for individual messages
-                print(f"[notify_all] Successfully sent message to token {token_str}: {response_str}")
+                response_str = messaging.send(message)
                 success_count += 1
                 individual_responses.append({"success": True, "message_id": response_str, "token": token_str}) 
             except exceptions.FirebaseError as fe_individual:
@@ -73,7 +63,6 @@ def notify_all(spot_id: int):
                 print(f"[notify_all] Generic exception sending to token {token_str}: {e_individual}")
                 failure_count += 1
                 individual_responses.append({"success": False, "exception": str(e_individual), "token": token_str})
-                # print(traceback.format_exc()) # Uncomment if needed
 
         print(f"[notify_all] FCM send summary: SuccessCount={success_count}, FailureCount={failure_count}")
         return {"success_count": success_count, "failure_count": failure_count, "responses": individual_responses}
