@@ -1,23 +1,42 @@
 services:
   db:
-    image: timescale/timescaledb:latest-pg14
+    image: postgres:15
     environment:
-      POSTGRES_USER: parking_user
-      POSTGRES_PASSWORD: parking_pass
-      POSTGRES_DB: parking
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
+
+  rtsp:
+    image: aler9/rtsp-simple-server
+    ports:
+      - "8554:8554"    
+    volumes:
+      - ./rtsp-simple-server.yml:/app/rtsp-simple-server.yml
+    command: ["/app/rtsp-simple-server", "/app/rtsp-simple-server.yml"]
 
   backend:
-    build: ./backend
-    ports:
-      - "8000:8000"
-    volumes:
-      # Mount the entire backend directory so code, Alembic scripts, and configs all sync correctly
-      - ./backend:/app
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
     depends_on:
       - db
+      - rtsp
+    environment:
+      # Change VIDEO_SOURCE to point to the new stream path defined in the RTSP config
+      # - VIDEO_SOURCE=rtsp://rtsp:8554/my_stream
+      VIDEO_SOURCE: /app/videos/test_video.mov
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      FIREBASE_CRED: /secrets/firebase-sa.json
+    volumes:
+      - ./backend:/app 
+      - ./secrets/firebase-sa.json:/secrets/firebase-sa.json:ro
+      - ./static:/static:ro # Mount static files for the frontend
+    ports:
+      - "8000:8000" 
+
 volumes:
-  db_data:
+  pgdata:

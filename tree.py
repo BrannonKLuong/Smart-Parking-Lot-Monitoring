@@ -1,5 +1,5 @@
 import os
-SKIP_NAMES = {'.venv', '.git', 'node_modules', '__pycache__'}
+SKIP_NAMES = {'.venv', '.git', 'node_modules', '__pycache__', '.angular'}
 
 def print_tree(path, prefix=''):
     entries = sorted(os.listdir(path))

@@ -1,67 +1,64 @@
 import React, { useEffect, useState } from 'react';
 import { Rnd } from 'react-rnd';
 
-export default function SpotsEditor({ videoSize, onSave }) {
-  // spots: [{ id, x, y, w, h }, …]
-  const [spots, setSpots]     = useState([]);
-  // history stack for undo
+// Accept initialSpots and setSpots as props
+export default function SpotsEditor({ initialSpots, videoSize, onSave, setSpots }) {
   const [history, setHistory] = useState([]);
   const [selected, setSelected] = useState(null);
 
-  // 1) Load initial config
+  // 1) Load initial config from props and set history
   useEffect(() => {
-    fetch('/api/spots')
-      .then(r=>r.json())
-      .then(data => {
-        setSpots(data.spots);
-        setHistory([data.spots]);
-      });
-  }, []);
+    setHistory([initialSpots]);
+  }, [initialSpots]); // Re-initialize history if initialSpots changes
 
-  // helper to push new state to history
   const push = newSpots => {
-    setSpots(newSpots);
+    setSpots(newSpots); 
     setHistory(h => [...h, newSpots]);
   };
 
   // 2) Handlers
   const onDragResize = (id, x,y,w,h) => {
-    push(spots.map(s => s.id===id ? { ...s, x,y,w,h } : s));
+    push(initialSpots.map(s => s.id===id ? { ...s, x,y,w,h } : s));
   };
+
   const addBox = () => {
-    const newId = Math.max(0, ...spots.map(s=>s.id)) + 1;
+    // This logic assigns the next sequential ID based on the current highest ID
+    const newId = Math.max(0, ...initialSpots.map(s=>s.id)) + 1;
     const defaultBox = { id:newId, x:20, y:20, w:100, h:80 };
-    push([...spots, defaultBox]);
-    setSelected(newId);
+    push([...initialSpots, defaultBox]);
   };
+
   const removeBox = () => {
     if (selected == null) return;
-    push(spots.filter(s=>s.id!==selected));
+    push(initialSpots.filter(s => s.id !== selected));
     setSelected(null);
   };
+
   const undo = () => {
     if (history.length < 2) return;
-    const newHist = [...history];
-    newHist.pop();
-    setHistory(newHist);
-    setSpots(newHist[newHist.length-1]);
-    setSelected(null);
+    const prevHistory = history.slice(0, -1);
+    setHistory(prevHistory);
+    setSpots(prevHistory[prevHistory.length - 1]);
+    setSelected(null); // Deselect on undo
   };
-  const save = () => onSave({ spots });
+
+  const save = () => {
+    onSave(initialSpots);
+  };
 
   return (
     <div>
       {/* Controls */}
       <div className="flex gap-2 mb-2">
-        <button onClick={addBox}>Add</button>
-        <button onClick={removeBox} disabled={selected==null}>Remove</button>
-        <button onClick={undo} disabled={history.length<2}>Undo</button>
-        <button onClick={save}>Save</button>
+        <button onClick={addBox} className="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Add</button>
+        <button onClick={removeBox} disabled={selected==null} className="px-4 py-2 bg-red-600 text-white rounded-lg shadow hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Remove</button>
+        <button onClick={undo} disabled={history.length<2} className="px-4 py-2 bg-yellow-600 text-white rounded-lg shadow hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus::ring-yellow-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Undo</button>
+        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Save</button>
       </div>
 
       {/* Canvas: video + draggable boxes */}
       <div
-        className="relative"
+        className="relative border-2 border-gray-300 rounded-lg overflow-hidden" // Added border and overflow hidden
         style={{ width: videoSize.width, height: videoSize.height }}
       >
         <img
@@ -70,7 +67,8 @@ export default function SpotsEditor({ videoSize, onSave }) {
           className="absolute inset-0 w-full h-full object-cover"
         />
 
-        {spots.map(s => (
+        {/* Use initialSpots from props for rendering */}
+        {initialSpots.map(s => (
           <Rnd
             key={s.id}
             bounds="parent"
@@ -86,13 +84,20 @@ export default function SpotsEditor({ videoSize, onSave }) {
                 ref.offsetWidth, ref.offsetHeight
               )
             }
+            // Added styling for the boxes
             style={{
-              border: s.id===selected ? '2px solid #00f' : '2px dashed #fff',
-              background: 'rgba(255,255,255,0.2)',
-              cursor: 'move'
+              border: `2px solid ${selected === s.id ? 'blue' : 'rgba(255,255,255,0.7)'}`, // Highlight selected
+              backgroundColor: selected === s.id ? 'rgba(0,0,255,0.2)' : 'rgba(0,0,0,0.1)', // Semi-transparent fill
+              boxSizing: 'border-box', // Include border in size
+              cursor: 'move', // Indicate draggable
             }}
+            // Handle selection on click
             onClick={() => setSelected(s.id)}
-          />
+          >
+            <div className="flex items-center justify-center w-full h-full text-white text-sm font-bold pointer-events-none">
+                {s.id}
+            </div>
+          </Rnd>
         ))}
       </div>
     </div>

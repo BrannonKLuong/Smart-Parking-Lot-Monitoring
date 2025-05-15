@@ -1,4 +1,6 @@
-from sqlalchemy import create_engine, Column, Integer, DateTime, String
+from sqlalchemy import create_engine, Column, Integer, DateTime, String, inspect
+from sqlmodel import SQLModel, Field
+from typing import Optional 
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
@@ -28,3 +30,16 @@ class VacancyEvent(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     spot_id = Column(Integer, index=True)
     camera_id = Column(String, index=True)
+
+class DeviceToken(SQLModel, table=True):
+    id: Optional[int] = Field(default=None, primary_key=True)
+    token: str = Field(index=True, unique=True)
+    platform: str = Field(default="android")
+
+def init():
+    SQLModel.metadata.create_all(engine)
+    insp = inspect(engine)
+    print("Tables now in database:", insp.get_table_names())
+
+if __name__ == "__main__":
+    init()

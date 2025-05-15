@@ -1,0 +1,18 @@
+# rtsp-simple-server configuration
+# https://github.com/aler9/rtsp-simple-server
+
+paths:
+  # This path accepts streams pushed from external sources (like your ffmpeg command)
+  # and makes them available for reading.
+  my_stream:
+    # Authentication for publishing (optional, but good practice)
+    # publish:
+    #   - user: myuser
+    #     pass: mypass
+    # Authentication for reading (optional)
+    # read:
+    #   - user: myuser2
+    #     pass: mypass2
+
+    # Source of the stream. 'publisher' means it's coming from a push (like ffmpeg).
+    source: publisher

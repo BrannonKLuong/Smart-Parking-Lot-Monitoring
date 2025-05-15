@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Dict, Tuple
 import datetime
 
-# only ever use this one
 SPOTS_FILE = Path(__file__).resolve().parents[1] / "spots.json"
 
 def _load_raw():
@@ -18,11 +17,11 @@ def _unpack(spot: dict) -> Tuple[float,float,float,float]:
     if "bbox" in spot:
         x1,y1,x2,y2 = spot["bbox"]
         return x1, y1, x2 - x1, y2 - y1
-    # fallback to React-editor shape
+
     x, y, w, h = spot["x"], spot["y"], spot["w"], spot["h"]
     return x, y, w, h
 
-# initial load
+
 _raw = _load_raw()
 SPOTS: Dict[int, Tuple[float,float,float,float]] = {
     spot["id"]: _unpack(spot)
@@ -40,7 +39,7 @@ def refresh_spots():
     SPOTS_FILE = Path(__file__).resolve().parents[1] / "spots.json"
     raw = json.loads(SPOTS_FILE.read_text()).get("spots", [])
 
-    # build a new dict of the same shape
+
     new = {
         spot["id"]: (
             spot["bbox"][0],
@@ -51,7 +50,7 @@ def refresh_spots():
         for spot in raw
     }
 
-    # mutate the existing SPOTS dict in-place
+
     SPOTS.clear()
     SPOTS.update(new)
 
@@ -69,7 +68,6 @@ def get_spot_states(detections) -> Dict[int, bool]:
 
 def detect_vacancies(prev_states, curr_states):
     from .db import SessionLocal, VacancyEvent
-    # import here to avoid circular
     from .main import broadcast_vacancy
 
     session = SessionLocal()
