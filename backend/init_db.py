@@ -1,8 +1,6 @@
-# backend/init_db.py
 from sqlmodel import SQLModel
-from app.db import engine  # adjust if your engine is elsewhere
-
-from app.schemas import Occupancy  # adjust to match your path
+from app.db import engine 
+from app.schemas import Occupancy 
 
 def init():
     SQLModel.metadata.create_all(engine)
