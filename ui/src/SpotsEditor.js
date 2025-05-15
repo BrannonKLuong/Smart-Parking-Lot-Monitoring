@@ -3,58 +3,46 @@ import { Rnd } from 'react-rnd';
 
 // Accept initialSpots and setSpots as props
 export default function SpotsEditor({ initialSpots, videoSize, onSave, setSpots }) {
-  // spots state is now managed by the parent (App.js)
-  // const [spots, setSpots]     = useState([]); // Remove internal spots state
-  // history stack for undo - keep this local to the editor
   const [history, setHistory] = useState([]);
   const [selected, setSelected] = useState(null);
 
   // 1) Load initial config from props and set history
   useEffect(() => {
-    // Initialize history with the initial spots from props
     setHistory([initialSpots]);
-    // No need to setSpots here, it's already managed by the parent
   }, [initialSpots]); // Re-initialize history if initialSpots changes
 
-  // helper to push new state to history and update parent's spots state
   const push = newSpots => {
-    setSpots(newSpots); // Update parent's spots state
-    setHistory(h => [...h, newSpots]); // Update local history
+    setSpots(newSpots); 
+    setHistory(h => [...h, newSpots]);
   };
 
   // 2) Handlers
   const onDragResize = (id, x,y,w,h) => {
-    // Use the spots state from props
     push(initialSpots.map(s => s.id===id ? { ...s, x,y,w,h } : s));
   };
 
   const addBox = () => {
     // This logic assigns the next sequential ID based on the current highest ID
-    // This is the behavior you want, where it doesn't reuse IDs.
     const newId = Math.max(0, ...initialSpots.map(s=>s.id)) + 1;
     const defaultBox = { id:newId, x:20, y:20, w:100, h:80 };
-    // Use the spots state from props when adding the new box
     push([...initialSpots, defaultBox]);
   };
 
   const removeBox = () => {
     if (selected == null) return;
-    // Use the spots state from props when removing a box
     push(initialSpots.filter(s => s.id !== selected));
-    setSelected(null); // Deselect after removing
+    setSelected(null);
   };
 
   const undo = () => {
     if (history.length < 2) return;
     const prevHistory = history.slice(0, -1);
     setHistory(prevHistory);
-    // Restore the spots state from the previous history entry
     setSpots(prevHistory[prevHistory.length - 1]);
     setSelected(null); // Deselect on undo
   };
 
   const save = () => {
-    // Pass the current spots state (managed by parent) to the onSave prop
     onSave(initialSpots);
   };
 
@@ -105,17 +93,7 @@ export default function SpotsEditor({ initialSpots, videoSize, onSave, setSpots 
             }}
             // Handle selection on click
             onClick={() => setSelected(s.id)}
-            // Add a handle for resizing to make it easier
-            // enableResizing={{
-            //   top:true, right:true, bottom:true, left:true,
-            //   topRight:true, bottomRight:true, bottomLeft:true, topLeft:true
-            // }}
-            // resizeHandleStyles={{
-            //   bottomRight: { width: 10, height: 10, backgroundColor: 'blue', border: '1px solid white' },
-            //   // Add styles for other handles if needed
-            // }}
           >
-            {/* Optional: Display spot ID inside the box */}
             <div className="flex items-center justify-center w-full h-full text-white text-sm font-bold pointer-events-none">
                 {s.id}
             </div>

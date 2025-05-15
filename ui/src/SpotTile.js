@@ -7,7 +7,7 @@ export default function SpotTile({ id, isFree, freeSince, highlight }) {
     // If the spot is not free, reset the counter and clear any interval
     if (!isFree) {
       setSecs(0);
-      return; // Exit the effect
+      return; 
     }
 
     // Check if freeSince is a valid date string before creating a Date object
@@ -17,8 +17,8 @@ export default function SpotTile({ id, isFree, freeSince, highlight }) {
     // If t0 is NaN (invalid date), don't start the interval
     if (isNaN(t0)) {
         console.warn(`SpotTile ${id}: Invalid freeSince timestamp received: ${freeSince}`);
-        setSecs(0); // Reset counter if timestamp is invalid
-        return; // Exit the effect
+        setSecs(0); 
+        return;
     }
 
     // Start the interval only if the spot is free and the timestamp is valid
@@ -33,7 +33,7 @@ export default function SpotTile({ id, isFree, freeSince, highlight }) {
       console.log(`SpotTile ${id}: Counter interval cleared.`); // Added log
     };
 
-  }, [isFree, freeSince, id]); // Added 'id' to dependencies, good practice
+  }, [isFree, freeSince, id]); 
 
   return (
     <div
@@ -49,7 +49,6 @@ export default function SpotTile({ id, isFree, freeSince, highlight }) {
     >
       <div className="font-semibold mb-2">Spot {id}</div>
       {isFree ? (
-        // Display the counter only if the spot is free and secs is a valid number
         <div className="text-sm">{!isNaN(secs) ? `Free for ${secs}s` : 'Status unknown'}</div>
       ) : (
         <div className="text-sm">Occupied</div>
