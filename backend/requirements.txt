@@ -8,4 +8,4 @@ sqlmodel
 alembic
 psycopg2-binary
 requests
-firebase-admin
+firebase-admin == 6.8.0
