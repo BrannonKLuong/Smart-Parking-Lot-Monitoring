@@ -29,6 +29,8 @@ jobs:
 
       - name: Install/Update AWS CLI to latest v2
         run: |
+          echo "Current AWS CLI version (before update attempt):"
+          aws --version || echo "AWS CLI v1 not found or 'aws' command not in PATH yet."
           echo "Removing existing AWS CLI v1 if present..."
           sudo apt-get remove awscli -y || true 
           echo "Installing/Updating AWS CLI v2..."
@@ -36,7 +38,7 @@ jobs:
           unzip -q awscliv2.zip
           sudo ./aws/install --update
           rm -rf awscliv2.zip aws/
-          echo "AWS CLI Version:"
+          echo "Updated AWS CLI Version:"
           aws --version
           echo "AWS CLI Path:"
           which aws
@@ -77,9 +79,10 @@ jobs:
         run: |
           echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
           
+          CONFIG_FILE_PATH="${{ github.workspace }}/source-configuration.json"
+          
           # Construct the JSON payload using jq for compact, single-line output.
-          # Ensure no newlines are present in the final JSON string.
-          SOURCE_CONFIG_JSON=$(jq -c -n \
+          jq -c -n \
             --arg image_identifier "$IMAGE_URI" \
             '{
               "ImageRepository": {
@@ -88,14 +91,16 @@ jobs:
                 "ImageConfiguration": { "Port": "8000" }
               },
               "AutoDeploymentsEnabled": false
-            }' | tr -d '\n\r') # Explicitly remove newlines/carriage returns
+            }' > "$CONFIG_FILE_PATH"
           
-          echo "Using Source Configuration JSON (should be a clean, single line):"
-          echo "$SOURCE_CONFIG_JSON"
+          echo "Using Source Configuration from file: $CONFIG_FILE_PATH"
+          echo "File content:"
+          cat "$CONFIG_FILE_PATH"
+          echo "--- End of file content ---"
 
-          # Try passing the JSON using a heredoc to avoid shell expansion issues with quotes within the JSON
+          # Try passing the file path without quotes around the file://<path> part
           aws apprunner start-deployment \
             --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --source-configuration "$SOURCE_CONFIG_JSON"
+            --source-configuration file://"$CONFIG_FILE_PATH"
             
           echo "App Runner deployment initiated."
