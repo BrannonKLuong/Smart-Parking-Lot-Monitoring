@@ -27,6 +27,11 @@ jobs:
           role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Check AWS CLI version
+        run: |
+          aws --version
+          which aws
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -63,8 +68,9 @@ jobs:
         run: |
           echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
           
-          # Construct the JSON payload and write it to a file
-          jq -n \
+          # Construct the JSON payload using jq for compact, single-line output.
+          # The -c flag is important for compact output.
+          SOURCE_CONFIG_JSON=$(jq -c -n \
             --arg image_identifier "$IMAGE_URI" \
             '{
               "ImageRepository": {
@@ -73,13 +79,13 @@ jobs:
                 "ImageConfiguration": { "Port": "8000" }
               },
               "AutoDeploymentsEnabled": false
-            }' > source-configuration.json # Write to a file in the current directory
+            }')
           
-          echo "Using Source Configuration from file source-configuration.json:"
-          cat source-configuration.json # Display the content of the JSON file for debugging
+          echo "Using Source Configuration JSON: $SOURCE_CONFIG_JSON"
 
+          # Pass the JSON string directly, ensuring it's quoted.
           aws apprunner start-deployment \
             --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --source-configuration file://source-configuration.json # Use file:// prefix
+            --source-configuration "$SOURCE_CONFIG_JSON"
             
           echo "App Runner deployment initiated."
