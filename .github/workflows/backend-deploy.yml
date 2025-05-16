@@ -27,38 +27,6 @@ jobs:
           role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Check AWS CLI version
-        run: |
-          aws --version
-          which aws# File: .github/workflows/backend-deploy.yml
-name: Deploy Backend to ECR and App Runner
-
-on:
-  push:
-    branches:
-      - main # Or your primary deployment branch
-    paths:
-      - 'backend/**' # Only run if changes are in the backend directory
-      - '.github/workflows/backend-deploy.yml' # Or on changes to this workflow file itself
-  workflow_dispatch: # Allows manual triggering
-
-jobs:
-  deploy-backend:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write # Required to use OIDC for AWS authentication
-      contents: read  # Required to checkout the code
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
       - name: Install/Update AWS CLI to latest v2
         run: |
           echo "Removing existing AWS CLI v1 if present..."
@@ -121,64 +89,5 @@ jobs:
           # AWS CLI command on a single line to avoid potential issues with line continuation characters in some shell environments.
           # Ensure $SOURCE_CONFIG_JSON is properly expanded as a single argument.
           aws apprunner start-deployment --service-arn "$APP_RUNNER_SERVICE_ARN" --source-configuration "$SOURCE_CONFIG_JSON"
-            
-          echo "App Runner deployment initiated."
-
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Create secrets directory for Firebase credentials
-        run: mkdir -p backend/secrets
-
-      - name: Create firebase-sa.json from secret
-        run: echo '${{ secrets.FIREBASE_SA_JSON_CONTENT }}' > backend/secrets/firebase-sa.json
-        env:
-          FIREBASE_SA_JSON_CONTENT: ${{ secrets.FIREBASE_SA_JSON_CONTENT }}
-
-      - name: Build, tag, and push image to Amazon ECR
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_BACKEND }}
-          IMAGE_TAG: ${{ github.sha }} # Use the commit SHA for a unique tag
-        run: |
-          echo "Building Docker image from context: ./backend"
-          ls -la ./backend # List contents of backend directory for debugging
-          ls -la ./backend/secrets # List contents of backend/secrets directory for debugging
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f backend/Dockerfile ./backend
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      - name: Deploy to AWS App Runner using AWS CLI
-        if: success() # Only run if previous steps succeeded
-        env:
-          APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
-          IMAGE_URI: ${{ steps.build-image.outputs.image_uri }}
-        run: |
-          echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
-          
-          # Construct the JSON payload using jq for compact, single-line output.
-          # The -c flag is important for compact output.
-          SOURCE_CONFIG_JSON=$(jq -c -n \
-            --arg image_identifier "$IMAGE_URI" \
-            '{
-              "ImageRepository": {
-                "ImageIdentifier": $image_identifier,
-                "ImageRepositoryType": "ECR",
-                "ImageConfiguration": { "Port": "8000" }
-              },
-              "AutoDeploymentsEnabled": false
-            }')
-          
-          echo "Using Source Configuration JSON: $SOURCE_CONFIG_JSON"
-
-          # Pass the JSON string directly, ensuring it's quoted.
-          aws apprunner start-deployment \
-            --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --source-configuration "$SOURCE_CONFIG_JSON"
             
           echo "App Runner deployment initiated."
