@@ -171,8 +171,8 @@ export default function App() {
       <Header
         darkMode={darkMode}
         toggleDarkMode={() => setDarkMode(prev => !prev)}
-        freeSpots={freeSpotsCount}
-        totalSpots={totalSpotsCount}
+        freeSpots={freeSpots}
+        totalSpots={totalSpots}
       />
 
       <div className="container mx-auto px-4 py-8">
