@@ -13,7 +13,7 @@ on:
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
-    permissions: # Add this permissions block for OIDC
+    permissions:
       id-token: write # Required to use OIDC for AWS authentication
       contents: read  # Required to checkout the code
 
@@ -31,6 +31,18 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Create secrets directory for Firebase credentials
+        # This step ensures the backend/secrets directory exists before writing the file.
+        # The Docker build context is ./backend, so we create secrets within it.
+        run: mkdir -p backend/secrets
+
+      - name: Create firebase-sa.json from secret
+        # This step writes the content of the GitHub secret into the file
+        # that the Dockerfile expects to COPY.
+        run: echo '${{ secrets.FIREBASE_SA_JSON_CONTENT }}' > backend/secrets/firebase-sa.json
+        env:
+          FIREBASE_SA_JSON_CONTENT: ${{ secrets.FIREBASE_SA_JSON_CONTENT }}
+
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
         env:
@@ -38,6 +50,9 @@ jobs:
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_BACKEND }}
           IMAGE_TAG: ${{ github.sha }} # Use the commit SHA for a unique tag
         run: |
+          echo "Building Docker image from context: ./backend"
+          ls -la ./backend # List contents of backend directory for debugging
+          ls -la ./backend/secrets # List contents of backend/secrets directory for debugging
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f backend/Dockerfile ./backend
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
@@ -62,6 +77,3 @@ jobs:
                 "AutoDeploymentsEnabled": false
             }'
           echo "App Runner deployment initiated."
-          # Note: App Runner deployment happens asynchronously. 
-          # To wait for completion, you would need a more complex script to poll deployment status.
-          # For now, we just initiate it. The App Runner console will show progress.
