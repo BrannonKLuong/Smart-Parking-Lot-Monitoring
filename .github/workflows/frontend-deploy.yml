@@ -4,18 +4,21 @@ name: Deploy Frontend to S3 and CloudFront
 on:
   push:
     branches:
-      - main 
+      - main # Or your primary deployment branch, e.g., master
     paths:
-      - 'ui/**'
-      - '.github/workflows/frontend-deploy.yml'
-  workflow_dispatch: 
+      - 'ui/**' # Only run if changes are in the ui directory
+      - '.github/workflows/frontend-deploy.yml' # Or on changes to this workflow file itself
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
 
 jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
+    permissions: # Add this permissions block
+      id-token: write # Required to use OIDC for AWS authentication
+      contents: read  # Required to checkout the code
     defaults:
       run:
-        working-directory: ./ui
+        working-directory: ./ui # Set working directory for all steps in this job
 
     steps:
       - name: Checkout code
@@ -30,21 +33,22 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '18' # Use a Node version compatible with your react-scripts and build process
 
       - name: Install dependencies
-        run: npm ci 
+        run: npm ci # 'ci' is generally recommended for CI for faster, more reliable installs
 
       - name: Build React App
+        # Use the package.json script that includes NODE_OPTIONS
         run: npm run build
         env:
           REACT_APP_API_BASE_URL: ${{ secrets.REACT_APP_API_BASE_URL }}
           REACT_APP_WS_BASE_URL: ${{ secrets.REACT_APP_WS_BASE_URL }}
-          NODE_OPTIONS: --openssl-legacy-provider 
+          # NODE_OPTIONS is now part of the npm run build script in package.json
 
       - name: Deploy to S3
         run: aws s3 sync ./build/ s3://${{ secrets.S3_BUCKET_FRONTEND }} --delete
-       
+        # The --delete flag removes files from S3 that are no longer in your build output
 
       - name: Invalidate CloudFront Cache
         run: |

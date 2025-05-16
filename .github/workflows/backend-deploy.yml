@@ -4,15 +4,18 @@ name: Deploy Backend to ECR and App Runner
 on:
   push:
     branches:
-      - main 
+      - main # Or your primary deployment branch
     paths:
-      - 'backend/**' 
-      - '.github/workflows/backend-deploy.yml' 
-  workflow_dispatch:
+      - 'backend/**' # Only run if changes are in the backend directory
+      - '.github/workflows/backend-deploy.yml' # Or on changes to this workflow file itself
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
+    permissions: # Add this permissions block for OIDC
+      id-token: write # Required to use OIDC for AWS authentication
+      contents: read  # Required to checkout the code
 
     steps:
       - name: Checkout code
@@ -31,9 +34,9 @@ jobs:
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
         env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }} 
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_BACKEND }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: ${{ github.sha }} # Use the commit SHA for a unique tag
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f backend/Dockerfile ./backend
           docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
@@ -41,9 +44,24 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Deploy to AWS App Runner
-        uses: aws-actions/aws-apprunner-deploy@v1
-        with:
-          service: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
-          image: ${{ steps.build-image.outputs.image_uri }} 
-          wait-for-service-stability: true
+      - name: Deploy to AWS App Runner using AWS CLI
+        if: success() # Only run if previous steps succeeded
+        env:
+          APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
+          IMAGE_URI: ${{ steps.build-image.outputs.image_uri }}
+        run: |
+          echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
+          aws apprunner start-deployment \
+            --service-arn "$APP_RUNNER_SERVICE_ARN" \
+            --source-configuration '{
+                "ImageRepository": {
+                    "ImageIdentifier": "'"$IMAGE_URI"'",
+                    "ImageRepositoryType": "ECR",
+                    "ImageConfiguration": { "Port": "8000" }
+                },
+                "AutoDeploymentsEnabled": false
+            }'
+          echo "App Runner deployment initiated."
+          # Note: App Runner deployment happens asynchronously. 
+          # To wait for completion, you would need a more complex script to poll deployment status.
+          # For now, we just initiate it. The App Runner console will show progress.
