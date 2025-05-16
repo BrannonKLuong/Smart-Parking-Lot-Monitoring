@@ -1,0 +1,53 @@
+# File: .github/workflows/frontend-deploy.yml
+name: Deploy Frontend to S3 and CloudFront
+
+on:
+  push:
+    branches:
+      - main 
+    paths:
+      - 'ui/**'
+      - '.github/workflows/frontend-deploy.yml'
+  workflow_dispatch: 
+
+jobs:
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./ui
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci 
+
+      - name: Build React App
+        run: npm run build
+        env:
+          REACT_APP_API_BASE_URL: ${{ secrets.REACT_APP_API_BASE_URL }}
+          REACT_APP_WS_BASE_URL: ${{ secrets.REACT_APP_WS_BASE_URL }}
+          NODE_OPTIONS: --openssl-legacy-provider 
+
+      - name: Deploy to S3
+        run: aws s3 sync ./build/ s3://${{ secrets.S3_BUCKET_FRONTEND }} --delete
+       
+
+      - name: Invalidate CloudFront Cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID_FRONTEND }} \
+            --paths "/*"
