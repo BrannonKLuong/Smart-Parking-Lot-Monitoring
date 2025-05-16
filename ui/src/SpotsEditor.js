@@ -1,101 +1,123 @@
-import React, { useEffect, useState } from 'react';
-import { Rnd } from 'react-rnd';
+// Path: ui/src/SpotsEditor.js
+// Component for visually editing parking spot bounding boxes on a video feed.
 
-// Accept initialSpots and setSpots as props
-export default function SpotsEditor({ initialSpots, videoSize, onSave, setSpots }) {
+import React, { useEffect, useState, useMemo } from 'react';
+import { Rnd } from 'react-rnd'; 
+
+export default function SpotsEditor({ initialSpots, videoSize, onSave, setSpots, apiBaseUrl }) {
+  const [currentSpots, setCurrentSpots] = useState([]); 
   const [history, setHistory] = useState([]);
-  const [selected, setSelected] = useState(null);
+  const [selectedBoxId, setSelectedBoxId] = useState(null); 
 
-  // 1) Load initial config from props and set history
+  // Construct the full video feed URL
+  const videoFeedUrl = useMemo(() => `${apiBaseUrl}/webcam_feed`, [apiBaseUrl]);
+
+  // Initialize currentSpots and history when initialSpots prop changes
   useEffect(() => {
-    setHistory([initialSpots]);
-  }, [initialSpots]); // Re-initialize history if initialSpots changes
+    setCurrentSpots(initialSpots.map(s => ({...s})));
+    setHistory([initialSpots.map(s => ({...s}))]);
+    setSelectedBoxId(null);
+  }, [initialSpots]);
 
-  const push = newSpots => {
-    setSpots(newSpots); 
-    setHistory(h => [...h, newSpots]);
+  // Function to update spots and push to history capped at 20
+  const updateSpotsAndHistory = (newSpots) => {
+    setCurrentSpots(newSpots);
+    setHistory(h => [...h.slice(0, 20), newSpots]);
   };
 
-  // 2) Handlers
-  const onDragResize = (id, x,y,w,h) => {
-    push(initialSpots.map(s => s.id===id ? { ...s, x,y,w,h } : s));
+  // Handler for dragging or resizing a spot box
+  const onDragResize = (id, x, y, w, h) => {
+    const updatedSpots = currentSpots.map(s =>
+      String(s.id) === String(id) ? { ...s, x, y, w, h } : s 
+    );
+    updateSpotsAndHistory(updatedSpots);
   };
 
+  // Handler to add a new parking spot box
   const addBox = () => {
-    // This logic assigns the next sequential ID based on the current highest ID
-    const newId = Math.max(0, ...initialSpots.map(s=>s.id)) + 1;
-    const defaultBox = { id:newId, x:20, y:20, w:100, h:80 };
-    push([...initialSpots, defaultBox]);
+    const newId = currentSpots.length > 0 ? Math.max(0, ...currentSpots.map(s => parseInt(s.id, 10))) + 1 : 1;
+    const defaultBox = { id: String(newId), x: 20, y: 20, w: 100, h: 80, is_available: true };
+    updateSpotsAndHistory([...currentSpots, defaultBox]);
   };
 
+  // Handler to remove the selected parking spot box
   const removeBox = () => {
-    if (selected == null) return;
-    push(initialSpots.filter(s => s.id !== selected));
-    setSelected(null);
+    if (selectedBoxId == null) return;
+    const filteredSpots = currentSpots.filter(s => String(s.id) !== String(selectedBoxId));
+    updateSpotsAndHistory(filteredSpots);
+    setSelectedBoxId(null);
   };
 
+  // Handler for the undo action
   const undo = () => {
     if (history.length < 2) return;
     const prevHistory = history.slice(0, -1);
+    const previousSpots = prevHistory[prevHistory.length - 1];
     setHistory(prevHistory);
-    setSpots(prevHistory[prevHistory.length - 1]);
-    setSelected(null); // Deselect on undo
+    setCurrentSpots(previousSpots); 
+    setSpots(previousSpots); 
+    setSelectedBoxId(null); 
   };
 
-  const save = () => {
-    onSave(initialSpots);
+  // Handler to save the current spot configurations
+  const handleSave = () => {
+    onSave(currentSpots); 
   };
 
   return (
-    <div>
-      {/* Controls */}
-      <div className="flex gap-2 mb-2">
-        <button onClick={addBox} className="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Add</button>
-        <button onClick={removeBox} disabled={selected==null} className="px-4 py-2 bg-red-600 text-white rounded-lg shadow hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Remove</button>
-        <button onClick={undo} disabled={history.length<2} className="px-4 py-2 bg-yellow-600 text-white rounded-lg shadow hover:bg-yellow-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus::ring-yellow-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Undo</button>
-        <button onClick={save} className="px-4 py-2 bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Save</button>
+    <div className="p-4 bg-gray-50 dark:bg-gray-800 rounded-lg shadow-inner">
+      {/* Control buttons for adding, removing, undoing, and saving */}
+      <div className="flex flex-wrap gap-3 mb-4">
+        <button onClick={addBox} className="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Add Spot</button>
+        <button onClick={removeBox} disabled={selectedBoxId == null} className="px-4 py-2 bg-red-600 text-white rounded-lg shadow hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Remove Selected</button>
+        <button onClick={undo} disabled={history.length < 2} className="px-4 py-2 bg-yellow-500 text-white rounded-lg shadow hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-opacity-50 transition duration-150 ease-in-out">Undo</button>
+        <button onClick={handleSave} className="px-4 py-2 bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition duration-150 ease-in-out">Save Configuration</button>
       </div>
 
-      {/* Canvas: video + draggable boxes */}
+      {/* Canvas area for video feed and draggable/resizable boxes */}
       <div
-        className="relative border-2 border-gray-300 rounded-lg overflow-hidden" // Added border and overflow hidden
+        className="relative border-2 border-gray-400 dark:border-gray-600 rounded-lg overflow-hidden bg-black" 
         style={{ width: videoSize.width, height: videoSize.height }}
+        onClick={(e) => { if (e.target === e.currentTarget) setSelectedBoxId(null);}}
       >
         <img
-          src="http://localhost:8000/webcam_feed"
-          alt="feed"
-          className="absolute inset-0 w-full h-full object-cover"
+          src={videoFeedUrl} 
+          alt="Live feed for spot configuration"
+          className="absolute inset-0 w-full h-full object-contain" 
         />
 
-        {/* Use initialSpots from props for rendering */}
-        {initialSpots.map(s => (
+        {/* Render draggable and resizable boxes for each spot */}
+        {currentSpots.map(spot => (
           <Rnd
-            key={s.id}
+            key={spot.id}
             bounds="parent"
-            size={{ width: s.w, height: s.h }}
-            position={{ x: s.x, y: s.y }}
+            size={{ width: spot.w, height: spot.h }}
+            position={{ x: spot.x, y: spot.y }}
             onDragStop={(_, d) =>
-              onDragResize(s.id, d.x, d.y, s.w, s.h)
+              onDragResize(spot.id, d.x, d.y, spot.w, spot.h)
             }
             onResizeStop={(_, __, ref, ___, pos) =>
               onDragResize(
-                s.id,
+                spot.id,
                 pos.x, pos.y,
                 ref.offsetWidth, ref.offsetHeight
               )
             }
-            // Added styling for the boxes
-            style={{
-              border: `2px solid ${selected === s.id ? 'blue' : 'rgba(255,255,255,0.7)'}`, // Highlight selected
-              backgroundColor: selected === s.id ? 'rgba(0,0,255,0.2)' : 'rgba(0,0,0,0.1)', // Semi-transparent fill
-              boxSizing: 'border-box', // Include border in size
-              cursor: 'move', // Indicate draggable
+            onClick={(e) => {
+                e.stopPropagation(); // Prevent canvas click from deselecting
+                setSelectedBoxId(spot.id);
             }}
-            // Handle selection on click
-            onClick={() => setSelected(s.id)}
+            style={{ // Styling for the boxes
+              border: `2px dashed ${String(selectedBoxId) === String(spot.id) ? 'blue' : 'rgba(255,255,255,0.7)'}`,
+              backgroundColor: String(selectedBoxId) === String(spot.id) ? 'rgba(0,0,255,0.2)' : 'rgba(255,255,255,0.1)',
+              boxSizing: 'border-box',
+              cursor: 'move',
+            }}
+            className="transition-all duration-100 ease-in-out" 
           >
-            <div className="flex items-center justify-center w-full h-full text-white text-sm font-bold pointer-events-none">
-                {s.id}
+            {/* Display spot ID inside the box */}
+            <div className="flex items-center justify-center w-full h-full text-white text-sm font-bold pointer-events-none select-none">
+              {spot.id}
             </div>
           </Rnd>
         ))}

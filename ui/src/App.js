@@ -5,9 +5,12 @@ import SpotTile      from './SpotTile';
 import SpotsEditor   from './SpotsEditor';
 import './index.css';
 
-const API_SPOTS = '/api/spots';
-const WS_URL     = 'ws://localhost:8000/ws';
-const VIDEO_URL  = 'http://localhost:8000/webcam_feed';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
+const WS_BASE_URL  = process.env.REACT_APP_WS_BASE_URL || 'ws://localhost:8000';
+
+const API_SPOTS = `${API_BASE_URL}/api/spots`;
+const WS_URL    = `${WS_BASE_URL}/ws`;
+const VIDEO_URL = `${API_BASE_URL}/webcam_feed`;
 
 const NOTIFICATION_DURATION = 10000; // Alert duration 10 seconds
 
@@ -26,9 +29,14 @@ export default function App() {
     fetch(API_SPOTS)
       .then(r => r.json())
       .then(data => {
-        setSpots(data.spots);
-        // isOccupied is the opposite of is_available from the backend
-        setStatuses(Object.fromEntries(data.spots.map(s => [s.id, !s.is_available])));
+        if (data && data.spots) {
+          setSpots(data.spots);
+          setStatuses(Object.fromEntries(data.spots.map(s => [s.id, !s.is_available])));
+        } else {
+          console.error("Fetched spots data is not in the expected format:", data);
+          setSpots([]);
+          setStatuses({});
+        }
       })
       .catch(error => console.error("Failed to fetch spots:", error));
   };
@@ -85,9 +93,6 @@ export default function App() {
 
     ws.onclose = (event) => {
       console.log('WebSocket disconnected', event.code, event.reason);
-      setTimeout(() => {
-        console.log('Attempting to reconnect WebSocket...');
-      }, 5000);
     };
 
     ws.onerror = (error) => {
@@ -128,7 +133,12 @@ export default function App() {
       },
       body: JSON.stringify({ spots: updatedSpots }),
     })
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) { // Check for HTTP errors
+          throw new Error(`HTTP error ${r.status}`);
+        }
+        return r.json();
+      })
       .then(data => {
         if (data.ok) {
           console.log('Spots saved successfully');
@@ -157,60 +167,62 @@ export default function App() {
 
 
   return (
-    <div className={`App ${darkMode ? 'dark' : ''}`}>
+    <div className={`App min-h-screen ${darkMode ? 'dark bg-gray-900 text-white' : 'bg-gray-100 text-gray-900'}`}>
       <Header
         darkMode={darkMode}
-        setDarkMode={setDarkMode}
-        freeSpots={freeSpots}
-        totalSpots={totalSpots}
+        toggleDarkMode={() => setDarkMode(prev => !prev)}
+        freeSpots={freeSpotsCount}
+        totalSpots={totalSpotsCount}
       />
 
       <div className="container mx-auto px-4 py-8">
-        {/* Edit Mode Toggle */}
-        <div className="flex justify-center mb-4">
+        {/* Edit Mode Toggle Button */}
+        <div className="flex justify-center mb-6">
           <button
             onClick={() => setEditMode(e => !e)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg shadow hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition duration-150 ease-in-out"
+            className="px-6 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 transition duration-150 ease-in-out"
           >
-            {editMode ? 'Cancel Edit' : 'Edit Spots'}
+            {editMode ? 'Cancel Edit Mode' : 'Edit Parking Spots'}
           </button>
         </div>
 
         {editMode ? (
           <SpotsEditor
             initialSpots={spots}
-            videoSize={{ width: 800, height: 600 }}
+            videoSize={{ width: 800, height: 600 }} // Define video preview size for the editor
             onSave={handleSave}
-            setSpots={setSpots}
+            setSpots={setSpots} 
+            apiBaseUrl={API_BASE_URL} 
           />
         ) : (
           // Live View (Video Feed + Spot Tiles)
           <>
             <Notifications
               notes={visibleNotes}
-              onFilter={setFilterSpot}
+              onFilter={setFilterSpot} // Allow clicking a notification to filter/highlight a spot
               muted={muted}
-              toggleMute={() => setMuted(m => !m)}
+              toggleMute={() => setMuted(m => !m)} // Allow muting/unmuting notifications
             />
 
             <main className="p-4">
+              {/* Live Video Feed */}
               <div className="flex justify-center mb-8">
                 <img
                   src={VIDEO_URL}
-                  alt="Live feed"
-                  className="w-full max-w-xl rounded-lg shadow"
+                  alt="Live parking feed"
+                  className="w-full max-w-2xl rounded-lg shadow-lg border-2 border-gray-300 dark:border-gray-700"
                 />
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-
+              {/* Grid of Parking Spot Tiles */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
                 {spots.map(spot => (
                   <SpotTile
-                    key={spot.id} 
+                    key={spot.id}
                     id={spot.id}
-                    isFree={!statuses[spot.id]}
-                    freeSince={times[spot.id]}
-                    highlight={filterSpot === spot.id}
+                    isFree={!statuses[spot.id]} 
+                    freeSince={times[spot.id]}   
+                    highlight={String(filterSpot) === String(spot.id)}
                   />
                 ))}
               </div>

@@ -1,0 +1,54 @@
+# Path: backend/.dockerignore
+
+# Python virtual environment
+.venv/
+venv/
+ENV/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE and editor directories/files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Test outputs and coverage reports
+.pytest_cache/
+.coverage
+htmlcov/
+pytestdebug.log
+
+# Build artifacts (if any specific to backend, less common for Python)
+dist/
+build/
+*.egg-info/
+
+# Local environment files (DATABASE_URL etc. should be passed as env vars in cloud)
+.env
+
+# Alembic local configuration (if different from what's needed in image)
+# alembic.ini # Only if you have a version you don't want in the image
+
+# Secrets - unless explicitly copied in Dockerfile for a specific reason
+# and if not handled by cloud secret management.
+# For this project, firebase-sa.json IS being copied, so we won't ignore the whole secrets dir here.
+# If you had other secrets not meant for the image, list them:
+# secrets/*
+# !secrets/firebase-sa.json # Example if you wanted to ignore all but one
+
+# Large media files not needed for runtime (if any, besides the test video)
+# videos/*
+# !videos/test_video.mov # Keep the test video if it's being copied
+
+# Git files
+.git/
+.gitignore
