@@ -71,7 +71,7 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Deploy to AWS App Runner using --cli-input-json
+      - name: Update App Runner Service to use new image
         if: success() # Only run if previous steps succeeded
         env:
           APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
@@ -79,32 +79,38 @@ jobs:
         run: |
           echo "Using AWS CLI at: $(which aws)"
           aws --version
-          echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
+          echo "Updating App Runner service: $APP_RUNNER_SERVICE_ARN to use image $IMAGE_URI"
           
-          CLI_INPUT_JSON_PATH="${{ github.workspace }}/apprunner-cli-input.json"
+          CONFIG_FILE_PATH="${{ github.workspace }}/source-configuration-for-update.json"
           
-          # Construct the full JSON payload for --cli-input-json
+          # JSON for update-service's --source-configuration
+          # This structure is specific to the SourceConfiguration parameter of update-service
           jq -c -n \
-            --arg service_arn "$APP_RUNNER_SERVICE_ARN" \
             --arg image_identifier "$IMAGE_URI" \
             '{
-              "ServiceArn": $service_arn,
-              "SourceConfiguration": {
-                "ImageRepository": {
-                  "ImageIdentifier": $image_identifier,
-                  "ImageRepositoryType": "ECR",
-                  "ImageConfiguration": { "Port": "8000" }
-                },
-                "AutoDeploymentsEnabled": false
+              "ImageRepository": {
+                "ImageIdentifier": $image_identifier,
+                "ImageRepositoryType": "ECR",
+                "ImageConfiguration": { "Port": "8000" }
               }
-            }' > "$CLI_INPUT_JSON_PATH"
+              # AutoDeploymentsEnabled is a separate top-level parameter for update-service, 
+              # not part of this SourceConfiguration block if you were to set it.
+              # For this image update, we only need to provide the ImageRepository details.
+            }' > "$CONFIG_FILE_PATH"
           
-          echo "Using CLI Input JSON from file: $CLI_INPUT_JSON_PATH"
+          echo "Using Source Configuration for update-service from file: $CONFIG_FILE_PATH"
           echo "File content:"
-          cat "$CLI_INPUT_JSON_PATH"
+          cat "$CONFIG_FILE_PATH"
           echo "--- End of file content ---"
 
-          aws apprunner start-deployment \
-            --cli-input-json "file://$CLI_INPUT_JSON_PATH"
+          aws apprunner update-service \
+            --service-arn "$APP_RUNNER_SERVICE_ARN" \
+            --source-configuration "file://$CONFIG_FILE_PATH"
             
-          echo "App Runner deployment initiated."
+          echo "App Runner service update initiated. This should trigger a new deployment."
+          # The update-service command itself usually triggers the deployment.
+          # If you find it doesn't reliably, you might add a 'start-deployment' call after a short delay,
+          # but it's often not needed.
+          # Example:
+          # sleep 10 # Wait a bit for the update to register
+          # aws apprunner start-deployment --service-arn "$APP_RUNNER_SERVICE_ARN"
