@@ -288,7 +288,7 @@ def video_processor():
                 sid_str = str(sid_int)
                 x1, y1 = int(sx), int(sy)
                 x2, y2 = int(sx + sw), int(sy + sh)
-                color = (0,0,255) if current_spot_statuses.get(sid_str, False) else (0,255,0)
+                color = (255,0,0) if current_spot_statuses.get(sid_str, False) else (0,0,0)
                 cv2.rectangle(frame_with_overlays,(x1,y1),(x2,y2),color,2)
                 cv2.putText(frame_with_overlays,f"Spot {sid_str}",(x1,y1-10),cv2.FONT_HERSHEY_SIMPLEX,0.7,color,2)
             for bx1,by1,bx2,by2 in initial_vehicle_boxes:
