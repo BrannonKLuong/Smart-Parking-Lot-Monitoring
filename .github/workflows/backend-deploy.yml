@@ -104,6 +104,7 @@ jobs:
             --service-arn "$APP_RUNNER_SERVICE_ARN" \
             --source-configuration "file://$CONFIG_FILE_PATH"
             
+            
           echo "App Runner service update initiated. This should trigger a new deployment."
           # The update-service command itself usually triggers the deployment.
           # If you find it doesn't reliably, you might add a 'start-deployment' call after a short delay,
