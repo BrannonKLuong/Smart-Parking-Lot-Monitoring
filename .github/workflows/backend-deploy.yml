@@ -71,7 +71,7 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Deploy to AWS App Runner using AWS CLI
+      - name: Deploy to AWS App Runner using --cli-input-json
         if: success() # Only run if previous steps succeeded
         env:
           APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
@@ -81,29 +81,30 @@ jobs:
           aws --version
           echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
           
-          CONFIG_FILE_PATH="${{ github.workspace }}/source-configuration.json"
+          CLI_INPUT_JSON_PATH="${{ github.workspace }}/apprunner-cli-input.json"
           
-          # Construct the JSON payload using jq for compact, single-line output.
+          # Construct the full JSON payload for --cli-input-json
           jq -c -n \
+            --arg service_arn "$APP_RUNNER_SERVICE_ARN" \
             --arg image_identifier "$IMAGE_URI" \
             '{
-              "ImageRepository": {
-                "ImageIdentifier": $image_identifier,
-                "ImageRepositoryType": "ECR",
-                "ImageConfiguration": { "Port": "8000" }
-              },
-              "AutoDeploymentsEnabled": false
-            }' > "$CONFIG_FILE_PATH"
+              "ServiceArn": $service_arn,
+              "SourceConfiguration": {
+                "ImageRepository": {
+                  "ImageIdentifier": $image_identifier,
+                  "ImageRepositoryType": "ECR",
+                  "ImageConfiguration": { "Port": "8000" }
+                },
+                "AutoDeploymentsEnabled": false
+              }
+            }' > "$CLI_INPUT_JSON_PATH"
           
-          echo "Using Source Configuration from file: $CONFIG_FILE_PATH"
+          echo "Using CLI Input JSON from file: $CLI_INPUT_JSON_PATH"
           echo "File content:"
-          cat "$CONFIG_FILE_PATH"
+          cat "$CLI_INPUT_JSON_PATH"
           echo "--- End of file content ---"
 
-          # Try passing the file path for --source-configuration without any quotes around the file:// part
-          # The shell will expand $CONFIG_FILE_PATH. This relies on the path not having spaces.
           aws apprunner start-deployment \
-            --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --source-configuration file://$CONFIG_FILE_PATH
+            --cli-input-json "file://$CLI_INPUT_JSON_PATH"
             
           echo "App Runner deployment initiated."
