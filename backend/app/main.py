@@ -171,6 +171,7 @@ async def event_processor():
 # --- API Endpoints --- #
 @app.get("/api/spots")
 def get_spots():
+    print("CI/CD Test: /api/spots endpoint was hit - new version!")
     print("GET /api/spots endpoint accessed.")
     try:
         raw = json.loads(SPOTS_PATH.read_text())
@@ -406,7 +407,7 @@ def video_processor():
                     sid_str_draw = str(sid_int_draw)
                     x1, y1 = int(sx_draw), int(sy_draw)
                     x2, y2 = int(sx_draw + sw_draw), int(sy_draw + sh_draw)
-                    color = (255, 255, 255) if current_spot_statuses.get(sid_str_draw, False) else (0, 0, 0)
+                    color = (0, 0, 255) if current_spot_statuses.get(sid_str_draw, False) else (0, 255, 0)
                     cv2.rectangle(frame_with_overlays, (x1, y1), (x2, y2), color, 2)
                     cv2.putText(frame_with_overlays, f"Spot {sid_str_draw}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 for bx1, by1, bx2, by2 in vehicle_boxes:
