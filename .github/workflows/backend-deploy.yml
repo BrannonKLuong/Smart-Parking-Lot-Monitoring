@@ -1,20 +1,21 @@
+# File: .github/workflows/backend-deploy.yml
 name: Deploy Backend to ECR and App Runner
 
 on:
   push:
     branches:
-      - main
+      - main # Or your primary deployment branch
     paths:
-      - 'backend/**'
-      - '.github/workflows/backend-deploy.yml'
-  workflow_dispatch:
+      - 'backend/**' # Only run if changes are in the backend directory
+      - '.github/workflows/backend-deploy.yml' # Or on changes to this workflow file itself
+  workflow_dispatch: # Allows manual triggering
 
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write       # for OIDC → AWS
-      contents: read        # to checkout the code
+      id-token: write # Required to use OIDC for AWS authentication
+      contents: read  # Required to checkout the code
 
     steps:
       - name: Checkout code
@@ -24,19 +25,26 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }}
-          aws-region:      ${{ secrets.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Install/Update AWS CLI to latest v2
+      - name: Install/Update AWS CLI to latest v2 and Verify
+        id: install_aws_cli
         run: |
+          echo "Current AWS CLI version (before update attempt):"
+          aws --version || echo "AWS CLI v1 not found or 'aws' command not in PATH yet."
           echo "Removing existing AWS CLI v1 if present..."
-          sudo apt-get remove awscli -y || true
+          sudo apt-get remove awscli -y --allow-remove-essential || true 
           echo "Installing/Updating AWS CLI v2..."
           curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
           unzip -q awscliv2.zip
-          sudo ./aws/install --update
+          sudo ./aws/install --bin-dir /usr/local/bin --install-dir /usr/local/aws-cli --update
           rm -rf awscliv2.zip aws/
-          echo "AWS CLI Version: $(aws --version)"
+          echo "Verifying AWS CLI installation..."
           echo "AWS CLI Path: $(which aws)"
+          echo "Updated AWS CLI Version:"
+          aws --version
+          # Add the AWS CLI path to the GITHUB_PATH to ensure it's used
+          echo "/usr/local/bin" >> $GITHUB_PATH
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -53,45 +61,51 @@ jobs:
       - name: Build, tag, and push image to Amazon ECR
         id: build-image
         env:
-          ECR_REGISTRY:   ${{ steps.login-ecr.outputs.registry }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_BACKEND }}
-          IMAGE_TAG:      ${{ github.sha }}
+          IMAGE_TAG: ${{ github.sha }} # Use the commit SHA for a unique tag
         run: |
-          echo "Building Docker image from ./backend"
-          ls -la ./backend
-          ls -la ./backend/secrets
-          docker build \
-            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-            -f backend/Dockerfile ./backend
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-                     $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "Building Docker image from context: ./backend"
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f backend/Dockerfile ./backend
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
           echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Deploy to AWS App Runner
-        if: success()
+      - name: Deploy to AWS App Runner using --cli-input-json
+        if: success() # Only run if previous steps succeeded
         env:
           APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
-          IMAGE_URI:              ${{ steps.build-image.outputs.image_uri }}
+          IMAGE_URI: ${{ steps.build-image.outputs.image_uri }}
         run: |
-          # write the App Runner source configuration to disk
-          cat <<EOF > source-config.json
-          {
-            "ImageRepository": {
-              "ImageIdentifier": "${IMAGE_URI}",
-              "ImageRepositoryType": "ECR",
-              "ImageConfiguration": {
-                "Port": "8000"
+          echo "Using AWS CLI at: $(which aws)"
+          aws --version
+          echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
+          
+          CLI_INPUT_JSON_PATH="${{ github.workspace }}/apprunner-cli-input.json"
+          
+          # Construct the full JSON payload for --cli-input-json
+          jq -c -n \
+            --arg service_arn "$APP_RUNNER_SERVICE_ARN" \
+            --arg image_identifier "$IMAGE_URI" \
+            '{
+              "ServiceArn": $service_arn,
+              "SourceConfiguration": {
+                "ImageRepository": {
+                  "ImageIdentifier": $image_identifier,
+                  "ImageRepositoryType": "ECR",
+                  "ImageConfiguration": { "Port": "8000" }
+                },
+                "AutoDeploymentsEnabled": false
               }
-            },
-            "AutoDeploymentsEnabled": false
-          }
-          EOF
+            }' > "$CLI_INPUT_JSON_PATH"
+          
+          echo "Using CLI Input JSON from file: $CLI_INPUT_JSON_PATH"
+          echo "File content:"
+          cat "$CLI_INPUT_JSON_PATH"
+          echo "--- End of file content ---"
 
-          # update the service (this triggers the new deployment)
-          aws apprunner update-service \
-            --service-arn "${APP_RUNNER_SERVICE_ARN}" \
-            --source-configuration file://source-config.json
-
+          aws apprunner start-deployment \
+            --cli-input-json "file://$CLI_INPUT_JSON_PATH"
+            
           echo "App Runner deployment initiated."
