@@ -81,18 +81,29 @@ jobs:
           aws --version
           echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
           
-          # Construct the JSON string using printf and compact it with jq.
-          # Pass the output of jq directly using command substitution $(...)
-          # This ensures the AWS CLI receives the JSON as a single, properly formatted argument.
+          CONFIG_FILE_PATH="${{ github.workspace }}/source-configuration.json"
+          
+          # Construct the JSON payload using jq for compact, single-line output.
+          jq -c -n \
+            --arg image_identifier "$IMAGE_URI" \
+            '{
+              "ImageRepository": {
+                "ImageIdentifier": $image_identifier,
+                "ImageRepositoryType": "ECR",
+                "ImageConfiguration": { "Port": "8000" }
+              },
+              "AutoDeploymentsEnabled": false
+            }' > "$CONFIG_FILE_PATH"
+          
+          echo "Using Source Configuration from file: $CONFIG_FILE_PATH"
+          echo "File content:"
+          cat "$CONFIG_FILE_PATH"
+          echo "--- End of file content ---"
+
+          # Try passing the file path for --source-configuration without any quotes around the file:// part
+          # The shell will expand $CONFIG_FILE_PATH. This relies on the path not having spaces.
           aws apprunner start-deployment \
             --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --source-configuration "$(printf '{
-                "ImageRepository": {
-                  "ImageIdentifier": "%s",
-                  "ImageRepositoryType": "ECR",
-                  "ImageConfiguration": { "Port": "8000" }
-                },
-                "AutoDeploymentsEnabled": false
-              }' "$IMAGE_URI" | jq -c .)"
+            --source-configuration file://$CONFIG_FILE_PATH
             
           echo "App Runner deployment initiated."
