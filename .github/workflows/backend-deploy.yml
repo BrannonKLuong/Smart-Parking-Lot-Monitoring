@@ -81,24 +81,18 @@ jobs:
           aws --version
           echo "Starting deployment to App Runner service: $APP_RUNNER_SERVICE_ARN with image $IMAGE_URI"
           
-          # Construct the JSON string using printf for precise control over quotes and newlines
-          # Then use jq to validate and compact it to a single line.
-          # This ensures $IMAGE_URI is correctly embedded and the JSON is valid.
-          SOURCE_CONFIG_JSON_MULTILINE=$(printf '{
-            "ImageRepository": {
-              "ImageIdentifier": "%s",
-              "ImageRepositoryType": "ECR",
-              "ImageConfiguration": { "Port": "8000" }
-            },
-            "AutoDeploymentsEnabled": false
-          }' "$IMAGE_URI")
-
-          SOURCE_CONFIG_JSON_COMPACT=$(echo "$SOURCE_CONFIG_JSON_MULTILINE" | jq -c .)
-          
-          echo "Using Source Configuration JSON (compacted by jq): $SOURCE_CONFIG_JSON_COMPACT"
-
+          # Construct the JSON string using printf and compact it with jq.
+          # Pass the output of jq directly using command substitution $(...)
+          # This ensures the AWS CLI receives the JSON as a single, properly formatted argument.
           aws apprunner start-deployment \
             --service-arn "$APP_RUNNER_SERVICE_ARN" \
-            --source-configuration "$SOURCE_CONFIG_JSON_COMPACT"
+            --source-configuration "$(printf '{
+                "ImageRepository": {
+                  "ImageIdentifier": "%s",
+                  "ImageRepositoryType": "ECR",
+                  "ImageConfiguration": { "Port": "8000" }
+                },
+                "AutoDeploymentsEnabled": false
+              }' "$IMAGE_URI" | jq -c .)"
             
           echo "App Runner deployment initiated."
