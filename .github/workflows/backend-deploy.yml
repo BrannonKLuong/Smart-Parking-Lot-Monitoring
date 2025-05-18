@@ -4,18 +4,19 @@ name: Deploy Backend to ECR and App Runner
 on:
   push:
     branches:
-      - main # Or your primary deployment branch
+      - main
     paths:
-      - 'backend/**' # Only run if changes are in the backend directory
-      - '.github/workflows/backend-deploy.yml' # Or on changes to this workflow file itself
-  workflow_dispatch: # Allows manual triggering
+      - 'backend/**'
+      - '.github/workflows/backend-deploy.yml'
+  workflow_dispatch:
 
 jobs:
   deploy-backend:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # Required to use OIDC for AWS authentication
-      contents: read  # Required to checkout the code
+      id-token: write
+      contents: read
+      packages: write # Required to push to GitHub Packages (ECR in this case)
 
     steps:
       - name: Checkout code
@@ -27,8 +28,21 @@ jobs:
           role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12' # Match your Dockerfile's Python version
+
+      - name: Cache Pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip # Path to pip cache directory
+          # Key for the cache: OS, Python version, and hash of requirements.txt
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
       - name: Install/Update AWS CLI to latest v2 and Verify
-        id: install_aws_cli
         run: |
           echo "Current AWS CLI version (before update attempt):"
           aws --version || echo "AWS CLI v1 not found or 'aws' command not in PATH yet."
@@ -44,6 +58,7 @@ jobs:
           echo "Updated AWS CLI Version:"
           aws --version
           echo "/usr/local/bin" >> $GITHUB_PATH
+
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
@@ -56,24 +71,28 @@ jobs:
         env:
           FIREBASE_SA_JSON_CONTENT: ${{ secrets.FIREBASE_SA_JSON_CONTENT }}
 
-      - name: Build, tag, and push image to Amazon ECR
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Docker image to ECR
         id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_BACKEND }}
-          IMAGE_TAG: ${{ github.sha }} # Use the commit SHA for a unique tag
-        run: |
-          echo "Building Docker image from context: ./backend"
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f backend/Dockerfile ./backend
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image_uri=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend # Build context is the backend directory
+          file: ./backend/Dockerfile # Path to your Dockerfile
+          push: true # Push to ECR
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY_BACKEND }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY_BACKEND }}:latest
+          cache-from: type=gha # Enable GitHub Actions cache for Docker layers
+          cache-to: type=gha,mode=max # Export cache to GitHub Actions cache
+
       - name: Update App Runner Service to use new image
-        if: success() # Only run if previous steps succeeded
+        if: success()
         env:
           APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
-          IMAGE_URI: ${{ steps.build-image.outputs.image_uri }}
+          # Use the ECR URI with the commit SHA tag for precise deployment
+          IMAGE_URI: "${{ steps.login-ecr.outputs.registry }}/${{ secrets.ECR_REPOSITORY_BACKEND }}:${{ github.sha }}"
         run: |
           echo "Using AWS CLI at: $(which aws)"
           aws --version
@@ -81,8 +100,6 @@ jobs:
           
           CONFIG_FILE_PATH="${{ github.workspace }}/source-configuration-for-update.json"
           
-          # JSON for update-service's --source-configuration
-          # This structure is specific to the SourceConfiguration parameter of update-service
           jq -c -n \
             --arg image_identifier "$IMAGE_URI" \
             '{
@@ -91,24 +108,14 @@ jobs:
                 "ImageRepositoryType": "ECR",
                 "ImageConfiguration": { "Port": "8000" }
               }
-              # AutoDeploymentsEnabled is a separate top-level parameter for update-service, 
-              # not part of this SourceConfiguration block if you were to set it.
-              # For this image update, we only need to provide the ImageRepository details.
             }' > "$CONFIG_FILE_PATH"
           
           echo "Using Source Configuration for update-service from file: $CONFIG_FILE_PATH"
-          echo "File content:"
           cat "$CONFIG_FILE_PATH"
           echo "--- End of file content ---"
+
           aws apprunner update-service \
             --service-arn "$APP_RUNNER_SERVICE_ARN" \
             --source-configuration "file://$CONFIG_FILE_PATH"
             
-            
           echo "App Runner service update initiated. This should trigger a new deployment."
-          # The update-service command itself usually triggers the deployment.
-          # If you find it doesn't reliably, you might add a 'start-deployment' call after a short delay,
-          # but it's often not needed.
-          # Example:
-          # sleep 10 # Wait a bit for the update to register
-          # aws apprunner start-deployment --service-arn "$APP_RUNNER_SERVICE_ARN"

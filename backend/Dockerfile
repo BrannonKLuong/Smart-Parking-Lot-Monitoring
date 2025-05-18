@@ -21,4 +21,4 @@ COPY videos/test_video.mov /app/videos/test_video.mov
 COPY secrets/firebase-sa.json /app/secrets/firebase-sa.json
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--ws", "websockets", "--root-path", "${APP_ROOT_PATH:-}"]

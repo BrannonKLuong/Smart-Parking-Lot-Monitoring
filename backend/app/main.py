@@ -111,27 +111,27 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-# @app.websocket("/ws")
-# async def websocket_endpoint(ws: WebSocket):
-#     await manager.connect(ws)
-#     try:
-#         while True:
-#             try:
-#                 await asyncio.wait_for(ws.receive_text(), timeout=60) 
-#             except asyncio.TimeoutError:
-#                 print(f"WebSocket {ws} received no message for 60 seconds, keeping connection open.")
-#                 pass 
-#     except WebSocketDisconnect:
-#         print("WebSocketDisconnect exception caught.")
-#         manager.disconnect(ws)
-#     except Exception as e:
-#         print(f"Unexpected error in websocket_endpoint: {e}") 
-#         manager.disconnect(ws)
-
-@app.get("/ws")
-async def http_get_ws_path_test():
-    print("HTTP GET request received on /ws path")
-    return {"message": "HTTP GET to /ws received successfully"}
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await manager.connect(ws)
+    try:
+        while True:
+            try:
+                await asyncio.wait_for(ws.receive_text(), timeout=60) 
+            except asyncio.TimeoutError:
+                await ws.send_text(json.dumps({"type": "ping"})) # Optional keep-alive
+                print(f"WebSocket {ws.client} keep-alive ping sent after timeout.")
+    except WebSocketDisconnect:
+        print("WebSocketDisconnect exception caught.")
+        manager.disconnect(ws)
+    except Exception as e:
+        print(f"Unexpected error in websocket_endpoint: {e}") 
+        manager.disconnect(ws)
+    finally:
+        # Ensure disconnect is called if loop breaks for other reasons
+        if ws in manager.active_connections:
+            manager.disconnect(ws)
+            print(f"WebSocket {ws.client} cleaned up from finally block.")
 
 # --- Globals for Video Processing and Event Queue --- #
 event_queue: queue.Queue = None

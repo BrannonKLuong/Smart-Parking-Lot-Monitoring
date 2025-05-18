@@ -4,21 +4,21 @@ name: Deploy Frontend to S3 and CloudFront
 on:
   push:
     branches:
-      - main # Or your primary deployment branch, e.g., master
+      - main 
     paths:
-      - 'ui/**' # Only run if changes are in the ui directory
-      - '.github/workflows/frontend-deploy.yml' # Or on changes to this workflow file itself
-  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+      - 'ui/**'
+      - '.github/workflows/frontend-deploy.yml'
+  workflow_dispatch:
 
 jobs:
   deploy-frontend:
     runs-on: ubuntu-latest
-    permissions: # Add this permissions block
-      id-token: write # Required to use OIDC for AWS authentication
-      contents: read  # Required to checkout the code
+    permissions: 
+      id-token: write
+      contents: read
     defaults:
       run:
-        working-directory: ./ui # Set working directory for all steps in this job
+        working-directory: ./ui 
 
     steps:
       - name: Checkout code
@@ -30,16 +30,17 @@ jobs:
           role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }}
           aws-region: ${{ secrets.AWS_REGION }}
 
-      - name: Set up Node.js
+      - name: Set up Node.js and Cache Dependencies
         uses: actions/setup-node@v4
         with:
-          node-version: '18' # Use a Node version compatible with your react-scripts and build process
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: ./ui/package-lock.json
 
       - name: Install dependencies
-        run: npm ci # 'ci' is generally recommended for CI for faster, more reliable installs
+        run: npm ci 
 
       - name: Build React App
-        # Use the package.json script that includes NODE_OPTIONS
         run: npm run build
         env:
           REACT_APP_API_BASE_URL: ${{ secrets.REACT_APP_API_BASE_URL }}
@@ -48,7 +49,6 @@ jobs:
 
       - name: Deploy to S3
         run: aws s3 sync ./build/ s3://${{ secrets.S3_BUCKET_FRONTEND }} --delete
-        # The --delete flag removes files from S3 that are no longer in your build output
 
       - name: Invalidate CloudFront Cache
         run: |
