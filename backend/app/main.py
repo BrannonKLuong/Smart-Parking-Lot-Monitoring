@@ -133,6 +133,23 @@ async def websocket_endpoint(ws: WebSocket):
             manager.disconnect(ws)
             print(f"WebSocket {ws.client} cleaned up from finally block.")
 
+    @app.websocket("/ws_test")
+    async def websocket_test_endpoint(websocket: WebSocket):
+        await websocket.accept()
+        print(f"WebSocket /ws_test connection accepted from {websocket.client}")
+        try:
+            while True:
+                data = await websocket.receive_text()
+                print(f"WebSocket /ws_test received: {data} from {websocket.client}")
+                await websocket.send_text(f"Message text was: {data}")
+        except WebSocketDisconnect:
+            print(f"WebSocket /ws_test connection closed by {websocket.client}")
+        except Exception as e:
+            print(f"Error in WebSocket /ws_test endpoint for {websocket.client}: {e}")
+            await websocket.close(code=1011) # Internal Error
+        finally:
+            print(f"WebSocket /ws_test connection cleanup for {websocket.client}")
+
 # --- Globals for Video Processing and Event Queue --- #
 event_queue: queue.Queue = None
 current_spot_statuses = {}
