@@ -1,7 +1,7 @@
 // Path: ui/src/App.js
-// Main application component for the React frontend - now with HTTP Polling.
+// Main application component for the React frontend - now with HTTP Polling and ESLint fix.
 
-import React, { useEffect, useState, useRef } from 'react'; // Added useRef
+import React, { useEffect, useState, useRef, useCallback } from 'react'; // Added useCallback
 import Header        from './Header';
 import Notifications from './Notifications';
 import SpotTile      from './SpotTile';
@@ -9,12 +9,9 @@ import SpotsEditor   from './SpotsEditor';
 import './index.css'; // Main stylesheet
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
-// WS_BASE_URL is no longer strictly needed for polling but can be kept if you plan to revert
-// const WS_BASE_URL  = process.env.REACT_APP_WS_BASE_URL || 'ws://localhost:8000';
-
-const API_SPOTS = `${API_BASE_URL}/api/spots`;
-// const WS_URL    = `${WS_BASE_URL}/ws`; // Commented out or remove
 const VIDEO_URL = `${API_BASE_URL}/webcam_feed`;
+const API_SPOTS = `${API_BASE_URL}/api/spots`;
+
 
 const NOTIFICATION_DURATION = 10000; // Alert duration 10 seconds
 const POLLING_INTERVAL = 5000; // Fetch new data every 5 seconds (5000 ms)
@@ -29,13 +26,17 @@ export default function App() {
   const [muted, setMuted] = useState(false);
   const [filterSpot, setFilterSpot] = useState(null);
 
-  // Use a ref to store the previous statuses to detect changes for notifications
   const prevStatusesRef = useRef({});
 
-  // Function to fetch spots from the backend
-  const fetchSpots = () => {
+  // Function to fetch spots from the backend, wrapped in useCallback
+  const fetchSpots = useCallback(() => {
     fetch(API_SPOTS)
-      .then(r => r.json())
+      .then(r => {
+        if (!r.ok) { // Check for HTTP errors
+          throw new Error(`HTTP error ${r.status} while fetching spots`);
+        }
+        return r.json();
+      })
       .then(data => {
         if (data && data.spots) {
           const newSpots = data.spots;
@@ -52,15 +53,15 @@ export default function App() {
             if (wasOccupied === true && isOccupied === false) { // Changed from occupied to free
               const nowTimestamp = new Date().toISOString();
               newTimes[spotIdStr] = nowTimestamp;
-              if (!muted) {
+              if (!muted) { // Check muted state before creating notification
                 const notificationId = `${spotIdStr}-${nowTimestamp}-${Math.random()}`;
-                // Add to notes at the beginning to show newest first
                 setNotes(prevNotes => [{ id: notificationId, spot_id: spotIdStr, timestamp: nowTimestamp }, ...prevNotes.slice(0, 4)]);
               }
             } else if (isOccupied === true) { // If occupied, ensure no 'freeSince' time
               delete newTimes[spotIdStr];
             } else if (wasOccupied === false && isOccupied === false && !newTimes[spotIdStr]) {
-              // If it was free, is still free, but somehow lost its timestamp, re-add (less likely needed)
+              // If it was free, is still free, but somehow lost its timestamp, re-add
+              // This case might indicate an issue elsewhere if it happens often.
               newTimes[spotIdStr] = new Date().toISOString();
             }
           });
@@ -69,38 +70,32 @@ export default function App() {
           setStatuses(newStatuses);
           setTimes(newTimes);
 
-          // Update the ref with the new statuses for the next comparison
           prevStatusesRef.current = newStatuses;
 
         } else {
           console.error("Fetched spots data is not in the expected format:", data);
-          // Optionally clear spots if data is malformed, or keep existing
-          // setSpots([]);
-          // setStatuses({});
         }
       })
       .catch(error => console.error("Failed to fetch spots:", error));
-  };
+  }, [muted, times]); // Add dependencies for fetchSpots: muted (for notification logic) and times (to avoid stale closures)
 
   // Initial fetch of spots data
   useEffect(() => {
     fetchSpots();
-  }, []);
+  }, [fetchSpots]); // Added fetchSpots to dependency array
 
   // HTTP Polling for spot statuses
   useEffect(() => {
-    fetchSpots(); // Initial fetch for polling
-    const intervalId = setInterval(() => {
-      if (!editMode) { // Only poll if not in edit mode to avoid conflicts
+    if (!editMode) { // Only poll if not in edit mode
+      fetchSpots(); // Initial fetch for this polling cycle
+      const intervalId = setInterval(() => {
         fetchSpots();
-      }
-    }, POLLING_INTERVAL);
+      }, POLLING_INTERVAL);
+      return () => clearInterval(intervalId); // Cleanup interval
+    }
+  }, [editMode, fetchSpots]); // Added fetchSpots and editMode to dependency array
 
-    // Cleanup function: clear the interval when the component unmounts or editMode changes
-    return () => clearInterval(intervalId);
-  }, [editMode, muted]); // Rerun if editMode or muted changes (muted is included to potentially re-trigger fetch for notifications)
-
-  // Effect to clear notifications after a duration (no change needed here)
+  // Effect to clear notifications after a duration
   useEffect(() => {
       if (notes.length === 0) return;
       const timers = notes.map(note => {
@@ -114,9 +109,7 @@ export default function App() {
       };
   }, [notes]);
 
-
-  // Handle saving spots from the editor (no change needed here)
-  const handleSave = (updatedSpots) => {
+  const handleSave = useCallback((updatedSpots) => {
     fetch(API_SPOTS, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -140,14 +133,12 @@ export default function App() {
         console.error('Error saving spots:', error);
         alert(`Error saving spots: ${error.message}`);
       });
-  };
+  }, [fetchSpots]); // fetchSpots is a dependency of handleSave
 
-  // Filter notes based on selected spot (no change needed here)
   const visibleNotes = filterSpot
     ? notes.filter(n => String(n.spot_id) === String(filterSpot))
     : notes;
 
-  // Calculate free and total spot counts (no change needed here)
   const totalSpots = spots.length;
   const freeSpots = Object.values(statuses).filter(isOccupied => !isOccupied).length;
 
@@ -175,7 +166,7 @@ export default function App() {
             initialSpots={spots}
             videoSize={{ width: 800, height: 600 }}
             onSave={handleSave}
-            setSpots={setSpots}
+            setSpots={setSpots} // This prop might need careful handling if SpotsEditor directly mutates spots
             apiBaseUrl={API_BASE_URL}
           />
         ) : (
