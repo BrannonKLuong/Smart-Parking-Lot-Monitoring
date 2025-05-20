@@ -1,17 +1,16 @@
 // Path: ui/src/App.js
 // Main application component for the React frontend - now with HTTP Polling and ESLint fix.
 
-import React, { useEffect, useState, useRef, useCallback } from 'react'; // Added useCallback
-import Header        from './Header';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
+import Header from './Header';
 import Notifications from './Notifications';
-import SpotTile      from './SpotTile';
-import SpotsEditor   from './SpotsEditor';
+import SpotTile from './SpotTile';
+import SpotsEditor from './SpotsEditor';
 import './index.css'; // Main stylesheet
 
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
 const VIDEO_URL = `${API_BASE_URL}/webcam_feed`;
 const API_SPOTS = `${API_BASE_URL}/api/spots`;
-
 
 const NOTIFICATION_DURATION = 10000; // Alert duration 10 seconds
 const POLLING_INTERVAL = 5000; // Fetch new data every 5 seconds (5000 ms)
@@ -79,34 +78,44 @@ export default function App() {
       .catch(error => console.error("Failed to fetch spots:", error));
   }, [muted, times]); // Add dependencies for fetchSpots: muted (for notification logic) and times (to avoid stale closures)
 
-  // Initial fetch of spots data
+  // Initial fetch of spots data, and fetch when fetchSpots changes (e.g. mute toggled)
+  // but only if not in edit mode.
   useEffect(() => {
-    fetchSpots();
-  }, [fetchSpots]); // Added fetchSpots to dependency array
+    if (!editMode) {
+      fetchSpots();
+    }
+  }, [fetchSpots, editMode]); // Added editMode to dependency array and guarded the call
 
   // HTTP Polling for spot statuses
   useEffect(() => {
-    if (!editMode) { // Only poll if not in edit mode
-      fetchSpots(); // Initial fetch for this polling cycle
+    if (!editMode) {
+      // No need for an immediate fetchSpots() here if the above useEffect handles it
+      // when editMode becomes false or when fetchSpots itself changes.
+      // However, having it here ensures polling starts with fresh data if the above
+      // useEffect didn't run for some reason (e.g., fetchSpots didn't change at the exact moment).
+      // For simplicity and to ensure it fetches when polling starts:
+      fetchSpots();
+
       const intervalId = setInterval(() => {
-        fetchSpots();
+        fetchSpots(); // Polling fetch
       }, POLLING_INTERVAL);
-      return () => clearInterval(intervalId); // Cleanup interval
+
+      return () => clearInterval(intervalId);
     }
-  }, [editMode, fetchSpots]); // Added fetchSpots and editMode to dependency array
+  }, [editMode, fetchSpots]); // Dependencies correctly include editMode and fetchSpots
 
   // Effect to clear notifications after a duration
   useEffect(() => {
-      if (notes.length === 0) return;
-      const timers = notes.map(note => {
-          const timer = setTimeout(() => {
-              setNotes(prevNotes => prevNotes.filter(n => n.id !== note.id));
-          }, NOTIFICATION_DURATION);
-          return timer;
-      });
-      return () => {
-          timers.forEach(timer => clearTimeout(timer));
-      };
+    if (notes.length === 0) return;
+    const timers = notes.map(note => {
+      const timer = setTimeout(() => {
+        setNotes(prevNotes => prevNotes.filter(n => n.id !== note.id));
+      }, NOTIFICATION_DURATION);
+      return timer;
+    });
+    return () => {
+      timers.forEach(timer => clearTimeout(timer));
+    };
   }, [notes]);
 
   const handleSave = useCallback((updatedSpots) => {
@@ -203,4 +212,3 @@ export default function App() {
     </div>
   );
 }
-// 
