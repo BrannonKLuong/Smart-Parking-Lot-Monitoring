@@ -21,11 +21,8 @@ jobs:
       AWS_REGION: ${{ secrets.AWS_REGION }}
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_BACKEND }} # e.g., smart-parking-backend
       APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
-      # IMPORTANT: This DATABASE_URL should point to your RDS instance for migrations
-      # Ensure this secret is configured in GitHub with the RDS connection string
       RDS_DATABASE_URL: ${{ secrets.RDS_DATABASE_URL }} 
-      # If your FIREBASE_SA_JSON_CONTENT is large, ensure it's handled correctly.
-      # For the Docker build, it's passed as a secret. For Alembic, it's not directly needed.
+      # This is the connection string for your RDS instance
 
     steps:
       - name: Checkout code
@@ -34,53 +31,54 @@ jobs:
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }} # e.g., arn:aws:iam::AWS_ACCOUNT_ID:role/GitHubActions-SmartParking-DeployRole
+          role-to-assume: ${{ secrets.IAM_ROLE_TO_ASSUME }} 
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Set up Python for Alembic
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Or your desired Python version for running Alembic
+          python-version: '3.11' 
 
       - name: Install Alembic and DB driver
-        # Assuming your backend requirements for alembic are in backend/requirements.txt
-        # or a specific requirements_migrations.txt if you have one.
-        # psycopg2-binary is for PostgreSQL.
         run: |
           python -m pip install --upgrade pip
+          # Ensure all dependencies needed by alembic/env.py are installed
+          # This might include your app's dependencies if env.py imports from your app
+          # For example, if env.py imports from app.db which uses sqlmodel:
           pip install alembic psycopg2-binary python-dotenv sqlalchemy sqlmodel
-        working-directory: ./backend # Ensure this is the directory where alembic.ini is
+        working-directory: ./backend 
+
+      - name: Remove local .env to ensure CI uses RDS_DATABASE_URL
+        # This step prevents a local backend/.env file (if committed) from overriding the DATABASE_URL set for CI.
+        run: |
+          if [ -f ./backend/.env ]; then
+            echo "Removing local backend/.env file to prevent conflict with CI DATABASE_URL."
+            rm ./backend/.env
+          else
+            echo "No local backend/.env file found, proceeding."
+          fi
 
       - name: Run Alembic Migrations
-        # This step runs migrations against the RDS database.
-        # It needs DATABASE_URL to be set in the environment.
-        # alembic.ini or env.py should be configured to read this.
-        # Ensure your alembic/env.py is set up to use DATABASE_URL from os.environ
-        # and that your backend/.env file (if present in repo) DOES NOT override it with local dev values.
-        # It's better if alembic/env.py directly uses os.environ.get('DATABASE_URL')
         shell: bash
         run: |
-          echo "Running Alembic migrations against RDS..."
-          # The DATABASE_URL for alembic will be taken from the environment variable set below
+          echo "Running Alembic migrations..."
+          echo "Target DATABASE_URL (from workflow env): ${{ env.RDS_DATABASE_URL }}"
+          # The DATABASE_URL for alembic will be taken from the environment variable set by the 'env' key of this step.
+          # Your alembic/env.py should be configured to pick up os.environ.get('DATABASE_URL').
           alembic upgrade head
-        working-directory: ./backend
+        working-directory: ./backend # This is where alembic.ini should be
         env:
           DATABASE_URL: ${{ env.RDS_DATABASE_URL }} # Explicitly set for this step
-          # If your alembic env.py loads .env files, ensure it doesn't pick up a local one.
-          # Consider adding `PYTHONUNBUFFERED: 1` if output is an issue.
+          PYTHONUNBUFFERED: "1" # Often useful for CI logging
 
       - name: Login to Amazon ECR
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Create firebase-sa.json from secret for Docker build
-        # This is for the Docker build process, not for Alembic migrations.
-        # Ensure your Dockerfile copies this into the correct location.
-        # The path here is relative to the checkout root.
         run: |
           mkdir -p ./backend/secrets
           echo "${{ secrets.FIREBASE_SA_JSON_CONTENT }}" > ./backend/secrets/firebase-sa.json
-        # Ensure FIREBASE_SA_JSON_CONTENT secret contains the JSON content, not a path.
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -88,18 +86,13 @@ jobs:
       - name: Build and push Docker image to ECR
         uses: docker/build-push-action@v5
         with:
-          context: ./backend # Path to your Dockerfile and backend code
+          context: ./backend 
           push: true
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          # Build args can be used to pass FIREBASE_CRED path if needed, but COPY in Dockerfile is often better
-          # build-args: |
-          #   FIREBASE_CRED_PATH=/app/secrets/firebase-sa.json
 
       - name: Update App Runner Service
-        # This uses the AWS CLI to update the App Runner service with the new image.
-        # Ensure your IAM role has `apprunner:UpdateService` and `apprunner:DescribeService` permissions.
         run: |
           aws apprunner update-service \
             --service-arn ${{ env.APP_RUNNER_SERVICE_ARN }} \
@@ -108,20 +101,18 @@ jobs:
                     "ImageIdentifier": "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}",
                     "ImageRepositoryType": "ECR",
                     "ImageConfiguration": { "Port": "8000" }
-                },
-                "AuthenticationConfiguration": {
-                     "AccessRoleArn": "${{ secrets.APP_RUNNER_ECR_ACCESS_ROLE_ARN }}" # Role App Runner uses to pull from ECR
-                },
-                "AutoDeploymentsEnabled": false 
+                }
+                # AuthenticationConfiguration might be needed if not pre-configured on App Runner
+                # If your App Runner service already has an ECR access role configured,
+                # you might not need to specify AuthenticationConfiguration here.
+                # Verify your App Runner service's configuration.
+                # ,
+                # "AuthenticationConfiguration": {
+                #      "AccessRoleArn": "${{ secrets.APP_RUNNER_ECR_ACCESS_ROLE_ARN }}" 
+                # }
             }' \
             --region ${{ env.AWS_REGION }}
-        # Note: AutoDeploymentsEnabled is set to false here because we are manually deploying.
-        # If you have ECR auto-deployments configured in App Runner, this might not be needed,
-        # or you might just push to ECR and let App Runner pick it up.
-        # The AuthenticationConfiguration might also be part of your service's default config.
-        # If so, you might only need to specify ImageRepository.
-        # A simpler update might be:
-        # aws apprunner start-deployment --service-arn ${{ env.APP_RUNNER_SERVICE_ARN }} --region ${{ env.AWS_REGION }}
-        # (This simpler command relies on the service being configured to pull the latest image from ECR
-        # or if the image tag is 'latest' and you retag. The explicit update-service is more precise.)
+        # Note: Consider using `aws apprunner start-deployment` if your service is configured
+        # to auto-pull from ECR on new image pushes, which can simplify this step.
+        # However, `update-service` with explicit image is more deterministic for CI.
 
