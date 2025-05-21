@@ -101,18 +101,16 @@ jobs:
                     "ImageIdentifier": "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}",
                     "ImageRepositoryType": "ECR",
                     "ImageConfiguration": { "Port": "8000" }
+                },
+                "AuthenticationConfiguration": {
+                     "AccessRoleArn": "${{ secrets.APP_RUNNER_ECR_ACCESS_ROLE_ARN }}" 
                 }
-                # AuthenticationConfiguration might be needed if not pre-configured on App Runner
-                # If your App Runner service already has an ECR access role configured,
-                # you might not need to specify AuthenticationConfiguration here.
-                # Verify your App Runner service's configuration.
-                # ,
-                # "AuthenticationConfiguration": {
-                #      "AccessRoleArn": "${{ secrets.APP_RUNNER_ECR_ACCESS_ROLE_ARN }}" 
-                # }
             }' \
+            --auto-deployments-enabled false \
             --region ${{ env.AWS_REGION }}
-        # Note: Consider using `aws apprunner start-deployment` if your service is configured
-        # to auto-pull from ECR on new image pushes, which can simplify this step.
-        # However, `update-service` with explicit image is more deterministic for CI.
+        # Note: AutoDeploymentsEnabled is now a separate top-level parameter.
+        # If you do not need to specify AuthenticationConfiguration (e.g., App Runner service
+        # already has an ECR access role configured and it's picked up automatically),
+        # you can remove the "AuthenticationConfiguration" block from the JSON above.
+        # Ensure the JSON is valid (e.g., no trailing comma after ImageRepository if AuthConfig is removed).
 
