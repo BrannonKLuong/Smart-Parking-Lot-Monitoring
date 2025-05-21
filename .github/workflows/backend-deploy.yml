@@ -104,12 +104,14 @@ jobs:
                 },
                 "AuthenticationConfiguration": {
                      "AccessRoleArn": "${{ secrets.APP_RUNNER_ECR_ACCESS_ROLE_ARN }}" 
-                }
+                },
+                "AutoDeploymentsEnabled": false
             }' \
-            --no-auto-deployments-enabled \
             --region ${{ env.AWS_REGION }}
-        # Note: AutoDeploymentsEnabled is now a separate top-level parameter.
+        # Note: AutoDeploymentsEnabled is now inside the --source-configuration JSON.
         # If you do not need to specify AuthenticationConfiguration (e.g., App Runner service
         # already has an ECR access role configured and it's picked up automatically),
         # you can remove the "AuthenticationConfiguration" block from the JSON above.
-        # Ensure the JSON is valid (e.g., no trailing comma after ImageRepository if AuthConfig is removed).
+        # Ensure the JSON is valid (e.g., no trailing comma after ImageRepository if AuthConfig is removed,
+        # and also no trailing comma after AuthenticationConfiguration if AutoDeploymentsEnabled is the last item).
+
