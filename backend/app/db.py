@@ -32,11 +32,28 @@ class VacancyEvent(Base):
     camera_id = Column(String, index=True)
 
 class DeviceToken(SQLModel, table=True):
+    __tablename__ = "device_token"
     id: Optional[int] = Field(default=None, primary_key=True)
     token: str = Field(index=True, unique=True)
     platform: str = Field(default="android")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+class ParkingSpotConfig(SQLModel, table=True):
+    __tablename__ = "parking_spot_config"
+    id: Optional[int] = Field(default=None, primary_key=True, index=True)
+    spot_label: str = Field(index=True)
+    camera_id: str = Field(default="default_camera", index = True)
+
+    x_coord: int = Field()
+    y_coord: int = Field()
+    width: int = Field()
+    height: int = Field()
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
 
 def init():
+    Base.metadata.create_all(bind=engine)
     SQLModel.metadata.create_all(engine)
     insp = inspect(engine)
     print("Tables now in database:", insp.get_table_names())
