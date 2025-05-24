@@ -278,6 +278,7 @@ async def video_processor():
             await asyncio.sleep(0.001) # Small sleep to prevent tight loop on high FPS source
             continue
 
+     
         # TODO: Add actual YOLOv8 processing here if you integrate a model directly
         # For now, using placeholder logic for spot states based on spot_logic
         
