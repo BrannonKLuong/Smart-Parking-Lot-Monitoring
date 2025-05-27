@@ -144,6 +144,7 @@ def get_kvs_hls_url(stream_name_or_arn, region_name=os.getenv("AWS_REGION", "us-
 
 # --- Video Capture and Processing ---
 def make_capture():
+    logger.info("--- make_capture called, VIDEO_SOURCE_TYPE from env: %s ---", os.getenv("VIDEO_SOURCE_TYPE"))
     global video_capture_global
     video_source_type = os.getenv("VIDEO_SOURCE_TYPE", "FILE").upper()
     video_source_value = os.getenv("VIDEO_SOURCE") 
