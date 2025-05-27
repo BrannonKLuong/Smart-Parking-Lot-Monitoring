@@ -52,11 +52,11 @@ class ParkingSpotConfig(SQLModel, table=True):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow, sa_column_kwargs={"onupdate": datetime.utcnow})
 
-def init():
+def init_db():
     Base.metadata.create_all(bind=engine)
     SQLModel.metadata.create_all(engine)
     insp = inspect(engine)
     print("Tables now in database:", insp.get_table_names())
 
 if __name__ == "__main__":
-    init()
+    init_db()
