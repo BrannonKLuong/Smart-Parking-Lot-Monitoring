@@ -9,3 +9,4 @@ alembic
 psycopg2-binary
 requests
 firebase-admin == 6.8.0
+boto3
