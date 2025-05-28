@@ -42,6 +42,14 @@ FCM_VACANCY_DELAY_SECONDS = int(os.getenv("FCM_VACANCY_DELAY_SECONDS", "30")) # 
 # --- Firebase Initialization ---
 try:
     if FIREBASE_CRED_PATH and os.path.exists(FIREBASE_CRED_PATH):
+        # ---- Add these lines for debugging ----
+        logger.info(f"Attempting to read Firebase cred file at: {FIREBASE_CRED_PATH}")
+        with open(FIREBASE_CRED_PATH, 'r', encoding='utf-8') as f: # Specify UTF-8 encoding
+            content_sample = f.read(200) # Read first 200 chars
+            logger.info(f"First 200 chars of Firebase cred file (raw): {repr(content_sample)}")
+            logger.info(f"First 200 chars of Firebase cred file (decoded): {content_sample}")
+        # ---- End of debug block ----
+
         if not firebase_admin._apps: # Check if already initialized
             cred = credentials.Certificate(FIREBASE_CRED_PATH)
             firebase_admin.initialize_app(cred)
@@ -49,10 +57,12 @@ try:
         else:
             logger.info("Firebase app already initialized.")
     else:
-        logger.warning(f"Firebase credentials not found at path: {FIREBASE_CRED_PATH}. FCM notifications will be disabled.")
+        logger.warning(f"Firebase credentials not found at path: {FIREBASE_CRED_PATH} or path doesn't exist. FCM notifications will be disabled.")
         FIREBASE_CRED_PATH = None # Disable FCM
 except Exception as e:
     logger.error(f"Error initializing Firebase Admin SDK: {e}")
+    logger.error("Full traceback for Firebase initialization error:") # Add this
+    logger.error(traceback.format_exc()) # This will print the full stack trace
     FIREBASE_CRED_PATH = None # Disable FCM
 
 # --- Database Initialization ---
@@ -487,6 +497,11 @@ async def shutdown_event():
     logger.info("Video processing stopped.")
 
 # --- API Endpoints ---
+
+@app.get("/")
+async def root():
+    return {"message": "Smart Parking API is running"}
+
 @app.get("/api/spots")
 async def get_spots_config():
     # Refresh spots from DB each time this is called to ensure latest config
