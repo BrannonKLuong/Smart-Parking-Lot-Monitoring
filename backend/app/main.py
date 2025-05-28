@@ -543,8 +543,12 @@ async def get_spots_config_api():
 @app.post("/api/spots")
 async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depends(SessionLocal)): 
     global previous_spot_states_global 
+    logger.info("--- save_spots_config_api V3 EXECUTING (Pydantic version) ---")
+    # ---- END OF UNIQUE LOG LINE ----
+
+    global previous_spot_states_global 
     logger.info(f"POST /api/spots received data (validated by Pydantic): {payload.dict()}") 
-    
+
     try:
         default_camera_id = "default_camera" 
         
