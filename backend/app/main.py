@@ -13,6 +13,7 @@ import json
 import logging
 from datetime import datetime, timedelta # Added timedelta
 from pathlib import Path # Added Path
+from pydantic import BaseModel, Field as PydanticField # Import Pydantic BaseModel
 
 # AWS SDK for Python
 import boto3
@@ -58,7 +59,6 @@ if FIREBASE_CRED_PATH:
     if os.path.exists(FIREBASE_CRED_PATH):
         try:
             logger.info(f"Attempting to read Firebase cred file at: {FIREBASE_CRED_PATH}")
-            # Removed direct file read here, SDK handles it.
             if not firebase_admin._apps:
                 cred = credentials.Certificate(FIREBASE_CRED_PATH)
                 firebase_initialize_app(cred)
@@ -92,14 +92,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Static Files & Root Endpoint (Adapted from local, ensure paths are correct for Docker) ---
-# For App Runner, static files are typically handled by S3/CloudFront.
-# This setup is more for local testing or if backend needs to serve some static content.
-# The Dockerfile needs to ensure these paths are valid if used.
-# Assuming 'static' is in the project root alongside 'backend' and 'ui' for local.
-# In Docker, if static files are needed, they should be copied to a known location.
-# For now, we'll keep the root endpoint simple for App Runner health checks.
+# --- Pydantic Models for API Spot Configuration ---
+class SpotConfigIn(BaseModel):
+    id: str # This will be used as spot_label
+    x: int
+    y: int
+    w: int
+    h: int
 
+class SpotsUpdateRequest(BaseModel):
+    spots: List[SpotConfigIn]
+
+# --- Static Files & Root Endpoint (Adapted from local, ensure paths are correct for Docker) ---
 @app.get("/")
 async def root():
     logger.info("Root path / accessed (health check).")
@@ -126,7 +130,6 @@ class ConnectionManager:
     async def broadcast(self, data: Dict[str, Any]):
         message_str = json.dumps(data, default=str) # Use default=str for datetime etc.
         
-        # Iterate over a copy for safe removal
         connections_to_remove = []
         async with self._lock:
             current_connections = list(self.active_connections)
@@ -147,7 +150,6 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 # --- Event Queue and Processor (Adapted from local) ---
-# Using asyncio.Queue for async environment
 event_queue: Optional[asyncio.Queue] = None
 
 async def event_processor_task():
@@ -167,7 +169,7 @@ async def event_processor_task():
             break
         except Exception as e:
             logger.error(f"Error in event processor task: {e}")
-            await asyncio.sleep(1) # Avoid tight loop on continuous error
+            await asyncio.sleep(1) 
 
 def enqueue_event(event_data: Dict[str, Any]):
     global event_queue
@@ -184,11 +186,15 @@ def enqueue_event(event_data: Dict[str, Any]):
 # --- Globals for Video Processing ---
 video_processing_active = False
 video_capture_global: Optional[cv2.VideoCapture] = None
-previous_spot_states_global: Dict[str, bool] = {} # {spot_label_str: is_occupied_bool}
-latest_frame_with_all_overlays: Optional[Any] = None # For MJPEG feed
-frame_access_lock = asyncio.Lock() # To protect latest_frame_with_all_overlays
-yolo_results_lock = asyncio.Lock() # To protect latest_yolo_detections_for_drawing (if used separately)
-last_fcm_notification_times: Dict[str, float] = {} # {spot_label_str: timestamp}
+previous_spot_states_global: Dict[str, bool] = {} 
+latest_frame_with_all_overlays: Optional[Any] = None 
+frame_access_lock = asyncio.Lock() 
+yolo_results_lock = asyncio.Lock() 
+last_fcm_notification_times: Dict[str, float] = {} 
+# These are managed by video_processor, not directly by API endpoints
+empty_start: Dict[str, Optional[datetime]] = {} 
+notified: Dict[str, bool] = {} 
+
 
 # --- KVS Helper Function (from existing App Runner main.py) ---
 def get_kvs_hls_url(stream_name_or_arn, region_name=os.getenv("AWS_REGION", "us-east-2")):
@@ -208,9 +214,9 @@ def get_kvs_hls_url(stream_name_or_arn, region_name=os.getenv("AWS_REGION", "us-
                                         region_name=region_name)
         
         hls_params['ContainerFormat'] = 'MPEG_TS' 
-        hls_params['DiscontinuityMode'] = 'ALWAYS' # Or 'NEVER' if stream is continuous
+        hls_params['DiscontinuityMode'] = 'ALWAYS' 
         hls_params['DisplayFragmentTimestamp'] = 'ALWAYS'
-        hls_params['Expires'] = 300 # URL valid for 5 minutes
+        hls_params['Expires'] = 300 
 
         hls_url_response = kvs_media_client.get_hls_streaming_session_url(**hls_params)
         hls_url = hls_url_response['HLSStreamingSessionURL']
@@ -225,20 +231,19 @@ def get_kvs_hls_url(stream_name_or_arn, region_name=os.getenv("AWS_REGION", "us-
 def make_capture():
     global video_capture_global
     
-    # Added explicit logging for env vars at the point of use
     env_video_source_type = os.getenv("VIDEO_SOURCE_TYPE")
     env_video_source_value = os.getenv("VIDEO_SOURCE")
     logger.info(f"--- make_capture called. Raw Env Vars: VIDEO_SOURCE_TYPE='{env_video_source_type}', VIDEO_SOURCE='{env_video_source_value}' ---")
 
-    video_source_type = env_video_source_type.upper() if env_video_source_type else "FILE" # Default to FILE if not set
+    video_source_type = env_video_source_type.upper() if env_video_source_type else "FILE" 
     video_source_value = env_video_source_value
     aws_region = os.getenv("AWS_REGION", "us-east-2")
-    default_video_file = "/app/videos/test_video.mov"
+    default_video_file = "/app/videos/test_video.mov" # Ensure this file exists in Docker if used
 
     if video_source_type == "FILE" and not video_source_value:
         video_source_value = default_video_file
         logger.info(f"VIDEO_SOURCE not set for FILE type, defaulting to: {default_video_file}")
-    elif not video_source_value and video_source_type != "WEBCAM_INDEX": # WEBCAM_INDEX can be 0
+    elif not video_source_value and video_source_type != "WEBCAM_INDEX": 
          logger.error(f"Error: VIDEO_SOURCE environment variable not set for VIDEO_SOURCE_TYPE: {video_source_type}")
          raise RuntimeError(f"VIDEO_SOURCE not set for {video_source_type}")
 
@@ -252,8 +257,7 @@ def make_capture():
         hls_url_used = get_kvs_hls_url(stream_name_or_arn=video_source_value, region_name=aws_region)
         if hls_url_used:
             logger.info(f"Attempting to open KVS HLS stream with OpenCV: {hls_url_used}")
-            # Set environment variables for FFmpeg to handle HLS better if needed
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyzeduration;2000000|probesize;1000000" # Example options
+            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyzeduration;2000000|probesize;1000000" 
             cap = cv2.VideoCapture(hls_url_used, cv2.CAP_FFMPEG)
             if not cap.isOpened():
                 logger.warning("Initial attempt to open HLS stream failed, retrying once after 5 seconds...")
@@ -264,22 +268,21 @@ def make_capture():
             raise RuntimeError("Failed to get KVS HLS URL from AWS.")
 
     elif video_source_type == "FILE":
-        # ... (file path logic from existing App Runner main.py) ...
         logger.info(f"Attempting to open video file: {video_source_value}")
-        if not os.path.exists(video_source_value):
+        if not os.path.exists(video_source_value): 
             logger.error(f"Video file not found at path: {video_source_value}")
             raise RuntimeError(f"Video file not found: {video_source_value}")
-        cap = cv2.VideoCapture(video_source_value) # Removed CAP_FFMPEG for local files unless issues
+        cap = cv2.VideoCapture(video_source_value) 
     
     elif video_source_type == "WEBCAM_INDEX":
         try:
-            idx = int(video_source_value if video_source_value is not None else "0") # Default to 0 if None
+            idx = int(video_source_value if video_source_value is not None else "0") 
             logger.info(f"Attempting to open webcam index: {idx}")
             cap = cv2.VideoCapture(idx)
         except ValueError:
             logger.error(f"Invalid webcam index: {video_source_value}")
             raise RuntimeError(f"Invalid webcam index: {video_source_value}")
-    else: # Direct URL (RTSP, HTTP, etc.)
+    else: 
         if not video_source_value:
             raise RuntimeError(f"VIDEO_SOURCE not set for URL type: {video_source_type}")
         logger.info(f"Attempting to open direct video URL: {video_source_value}")
@@ -300,38 +303,40 @@ def make_capture():
 async def video_processor():
     global video_processing_active, video_capture_global, previous_spot_states_global
     global latest_frame_with_all_overlays, frame_access_lock, last_fcm_notification_times
+    global empty_start, notified # Ensure globals are accessible
     
     cap = None
     try:
         logger.info("Video_processor: Attempting to initialize video capture...")
-        cap = make_capture() # Uses the KVS-aware make_capture
-        video_capture_global = cap # Ensure global is set if make_capture succeeds
+        cap = make_capture() 
+        video_capture_global = cap 
     except RuntimeError as e:
         logger.error(f"Video_processor: CRITICAL - Failed to initialize video capture on startup: {e}")
         video_processing_active = False
-        await manager.broadcast({"type": "video_error", "data": {"error": "Video source failed on startup", "detail": str(e)}})
-        return # Stop processing if capture fails initially
+        # Ensure manager is available for broadcast if startup fails this early
+        if 'manager' in globals():
+             await manager.broadcast({"type": "video_error", "data": {"error": "Video source failed on startup", "detail": str(e)}})
+        return 
 
     logger.info("Video_processor: Video capture initialized. Starting processing loop.")
     video_processing_active = True
     
-    # State variables adapted from local version
-    # prev_states is now previous_spot_states_global (string keys)
-    empty_start: Dict[str, Optional[datetime]] = {} # {spot_label_str: datetime_obj_when_spot_became_empty}
-    notified: Dict[str, bool] = {} # {spot_label_str: bool_if_notification_sent_for_current_vacancy}
-    
     VACANCY_DELAY = timedelta(seconds=FCM_VACANCY_DELAY_SECONDS)
-    vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"} # Make this configurable if needed
+    vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"} 
 
     loop = asyncio.get_event_loop()
     
-    # Initial state setup
-    spot_logic.refresh_spots() # Load spots from DB
+    # Initial state setup based on current DB spots
+    spot_logic.refresh_spots() 
     for spot_label_str in spot_logic.SPOTS.keys():
-        previous_spot_states_global[spot_label_str] = False # Assume all free initially
-        empty_start[spot_label_str] = datetime.utcnow()
-        notified[spot_label_str] = False
-    logger.info(f"Initial spot states: {previous_spot_states_global}")
+        if spot_label_str not in previous_spot_states_global: # Initialize if not already present
+            previous_spot_states_global[spot_label_str] = False 
+        if spot_label_str not in empty_start:
+            empty_start[spot_label_str] = datetime.utcnow()
+        if spot_label_str not in notified:
+            notified[spot_label_str] = False
+    logger.info(f"Initial spot states after refresh: {previous_spot_states_global}")
+
 
     frame_count = 0
     source_fps = cap.get(cv2.CAP_PROP_FPS) if cap else 0
@@ -347,7 +352,7 @@ async def video_processor():
                 if cap: cap.release()
                 cap = make_capture()
                 video_capture_global = cap
-                source_fps = cap.get(cv2.CAP_PROP_FPS) if cap else 0 # Re-get FPS
+                source_fps = cap.get(cv2.CAP_PROP_FPS) if cap else 0 
                 if source_fps > 0 and VIDEO_PROCESSING_FPS > 0 and VIDEO_PROCESSING_FPS < source_fps:
                     frame_skip_interval = int(source_fps / VIDEO_PROCESSING_FPS)
                 logger.info(f"Video_processor: Re-initialized video capture. New Source FPS: {source_fps}, Frame skip: {frame_skip_interval}")
@@ -362,13 +367,11 @@ async def video_processor():
                 video_processing_active = False
                 break
 
-
         ret, frame = cap.read()
         if not ret or frame is None:
             logger.warning("Video_processor: Failed to grab frame or frame is None. Attempting to reopen.")
-            # Re-open logic similar to above
             if cap: cap.release()
-            await asyncio.sleep(2) # Wait before trying to reopen
+            await asyncio.sleep(2) 
             try:
                 cap = make_capture()
                 video_capture_global = cap
@@ -384,52 +387,57 @@ async def video_processor():
             await asyncio.sleep(0.001) 
             continue
         
-        # --- Perform Detection ---
-        yolo_results = None
-        vehicle_boxes_for_spot_logic = [] # For spot logic
+        yolo_results_list = None
+        vehicle_boxes_for_spot_logic = [] 
         try:
-            # Run blocking detection in a thread pool executor
-            yolo_results_list = await loop.run_in_executor(None, detect, frame.copy()) # detect should return a list of results
+            yolo_results_list = await loop.run_in_executor(None, detect, frame.copy()) 
 
-            if yolo_results_list: # Assuming detect returns a list of result objects (like Ultralytics)
+            if yolo_results_list: 
                 for res in yolo_results_list:
                     if hasattr(res, 'boxes') and res.boxes is not None:
-                        boxes_coords = res.boxes.xyxy.tolist() # [x1, y1, x2, y2]
+                        boxes_coords = res.boxes.xyxy.tolist() 
                         classes_indices = res.boxes.cls.tolist()
-                        class_names_map = res.names # dict: {index: name}
+                        class_names_map = res.names 
 
                         for i, cls_idx_float in enumerate(classes_indices):
                             cls_idx = int(cls_idx_float)
-                            if cls_idx < len(class_names_map) and class_names_map[cls_idx] in vehicle_classes:
+                            if cls_idx in class_names_map and class_names_map[cls_idx] in vehicle_classes:
                                 vehicle_boxes_for_spot_logic.append(boxes_coords[i])
-            # Store raw results if needed for drawing later by generate_frames
-            # async with yolo_results_lock: latest_yolo_detections_for_drawing = yolo_results_list
-
+                            elif cls_idx < 100: # Common range for COCO, adjust if needed
+                                # Only log warning if class_names_map is present but index is bad
+                                if class_names_map and cls_idx >= len(class_names_map) :
+                                     logger.warning(f"Class index {cls_idx} out of bounds for class_names_map (len: {len(class_names_map)}). Detection skipped.")
+                                # else: class_names_map might not be populated by detect() for all cases
         except Exception as e_detect:
             logger.error(f"Video_processor: Error during YOLO detection: {e_detect}")
             logger.error(traceback.format_exc())
-            vehicle_boxes_for_spot_logic = [] # Ensure it's an empty list on error
+            vehicle_boxes_for_spot_logic = [] 
 
-        # --- Update Spot States (Adapted from local version) ---
-        current_detected_occupancy: Dict[str, bool] = {} # {spot_label_str: is_occupied_bool}
-        spot_logic.refresh_spots() # Ensure SPOTS is up-to-date from DB
+        current_detected_occupancy: Dict[str, bool] = {} 
+        spot_logic.refresh_spots() # Refresh spots from DB before processing each frame
 
-        # Handle spots removed from config
         active_spot_labels = set(spot_logic.SPOTS.keys())
+        # Clean up states for spots that no longer exist in config
         for label_str in list(previous_spot_states_global.keys()):
             if label_str not in active_spot_labels:
-                logger.info(f"Spot {label_str} removed from config, cleaning up state.")
+                logger.info(f"Spot {label_str} removed from config, cleaning up its state in video_processor.")
                 previous_spot_states_global.pop(label_str, None)
                 empty_start.pop(label_str, None)
                 notified.pop(label_str, None)
         
-        for spot_label_str, (sx, sy, sw, sh) in spot_logic.SPOTS.items():
-            # Initialize state for new spots
+        # Initialize states for newly added spots
+        for spot_label_str in active_spot_labels:
             if spot_label_str not in previous_spot_states_global:
-                logger.info(f"New spot {spot_label_str} detected from config, initializing state.")
-                previous_spot_states_global[spot_label_str] = False
+                logger.info(f"New spot {spot_label_str} detected from config in video_processor, initializing state.")
+                previous_spot_states_global[spot_label_str] = False # Assume free
                 empty_start[spot_label_str] = datetime.utcnow()
                 notified[spot_label_str] = False
+        
+        for spot_label_str, spot_coords in spot_logic.SPOTS.items():
+            if not isinstance(spot_coords, tuple) or len(spot_coords) != 4:
+                logger.error(f"Invalid spot_coords for {spot_label_str}: {spot_coords}. Skipping this spot in occupancy check.")
+                continue
+            sx, sy, sw, sh = spot_coords
 
             is_occupied_now = any(
                 sx <= (bx1 + bx2) / 2 <= sx + sw and sy <= (by1 + by2) / 2 <= sy + sh
@@ -438,14 +446,12 @@ async def video_processor():
             current_detected_occupancy[spot_label_str] = is_occupied_now
 
         now = datetime.utcnow()
-        state_changed_for_broadcast = False
 
-        for spot_label_str in spot_logic.SPOTS.keys(): # Iterate over currently configured spots
-            was_occupied = previous_spot_states_global.get(spot_label_str, False)
-            is_now_occupied = current_detected_occupancy.get(spot_label_str, False)
+        for spot_label_str in spot_logic.SPOTS.keys(): 
+            was_occupied = previous_spot_states_global.get(spot_label_str, False) # Get current known state
+            is_now_occupied = current_detected_occupancy.get(spot_label_str, False) # Get newly detected state
 
             if was_occupied != is_now_occupied:
-                state_changed_for_broadcast = True
                 logger.info(f"Spot {spot_label_str} changed: {'Free' if was_occupied else 'Occupied'} -> {'Occupied' if is_now_occupied else 'Free'}")
                 event_data = {
                     "type": "spot_update",
@@ -457,25 +463,23 @@ async def video_processor():
                 }
                 enqueue_event(event_data)
 
-                if is_now_occupied: # Free -> Occupied
+                if is_now_occupied: 
                     empty_start[spot_label_str] = None
-                else: # Occupied -> Free
+                else: 
                     empty_start[spot_label_str] = now
-                    notified[spot_label_str] = False # Reset notification status
+                    notified[spot_label_str] = False 
 
-            # FCM Notification Logic (for spots that just became free and stayed free)
             if not is_now_occupied and empty_start.get(spot_label_str) and not notified.get(spot_label_str, False):
                 if (now - empty_start[spot_label_str]) >= VACANCY_DELAY:
                     logger.info(f"Spot {spot_label_str} confirmed vacant for {VACANCY_DELAY}, attempting FCM notification.")
                     try:
-                        spot_id_int = int(spot_label_str) # Assuming spot_label can be cast to int for notify_all
-                        # Run notify_users_for_spot_vacancy in executor as it might involve DB/network
+                        spot_id_int = int(spot_label_str) 
                         await loop.run_in_executor(None, notify_users_for_spot_vacancy, spot_id_int)
-                        notified[spot_label_str] = True
+                        notified[spot_label_str] = True # Mark as notified for this vacancy period
                         
-                        # Log vacancy event to DB (can also be in notify_users_for_spot_vacancy)
-                        with Session(db_engine) as session_db: # Use db_engine
-                            evt = VacancyEvent(timestamp=now, spot_id=spot_id_int, camera_id="default_camera") # Use default_camera or get from config
+                        # Log VacancyEvent to DB
+                        with Session(db_engine) as session_db: 
+                            evt = VacancyEvent(timestamp=now, spot_id=spot_id_int, camera_id="default_camera") 
                             session_db.add(evt)
                             session_db.commit()
                             logger.info(f"Logged VacancyEvent for spot {spot_label_str} (ID: {spot_id_int}).")
@@ -486,57 +490,48 @@ async def video_processor():
                         logger.error(f"Error during FCM notification for spot {spot_label_str}: {e_fcm}")
                         logger.error(traceback.format_exc())
             
-            previous_spot_states_global[spot_label_str] = is_now_occupied
-
-
-        # Broadcast all statuses if anything changed, or periodically
-        # For simplicity, let's always broadcast current state to ensure new clients get it
-        # This is already handled by individual spot_update events above if using the queue
-        # If a full state broadcast is desired periodically, add it here.
-        # For now, individual updates are sent.
+            previous_spot_states_global[spot_label_str] = is_now_occupied # Persist the new state
 
         # --- Update frame for MJPEG stream ---
         frame_to_display = frame.copy()
-        # Draw spot rectangles
-        for spot_label_str_draw, (sx, sy, sw, sh) in spot_logic.SPOTS.items():
+        for spot_label_str_draw, spot_coords_draw in spot_logic.SPOTS.items():
+            if not isinstance(spot_coords_draw, tuple) or len(spot_coords_draw) != 4:
+                continue 
+            sx_draw, sy_draw, sw_draw, sh_draw = spot_coords_draw
             is_occupied = previous_spot_states_global.get(spot_label_str_draw, False)
             color = (0, 0, 255) if is_occupied else (0, 255, 0)
-            cv2.rectangle(frame_to_display, (sx, sy), (sx + sw, sy + sh), color, 2)
-            cv2.putText(frame_to_display, spot_label_str_draw, (sx, sy - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
-        # Draw vehicle detection boxes
+            cv2.rectangle(frame_to_display, (sx_draw, sy_draw), (sx_draw + sw_draw, sy_draw + sh_draw), color, 2)
+            cv2.putText(frame_to_display, spot_label_str_draw, (sx_draw, sy_draw - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        
         for bx1, by1, bx2, by2 in vehicle_boxes_for_spot_logic:
-            cv2.rectangle(frame_to_display, (int(bx1), int(by1)), (int(bx2), int(by2)), (0, 255, 255), 1) # Yellow
+            cv2.rectangle(frame_to_display, (int(bx1), int(by1)), (int(bx2), int(by2)), (0, 255, 255), 1) 
 
         async with frame_access_lock:
             global latest_frame_with_all_overlays
             latest_frame_with_all_overlays = frame_to_display
         
-        # Control processing rate
-        await asyncio.sleep(max(0.01, (1.0 / VIDEO_PROCESSING_FPS))) # Simple delay based on target FPS
+        await asyncio.sleep(max(0.01, (1.0 / VIDEO_PROCESSING_FPS))) 
             
     logger.info("Video_processor: Processing loop stopped.")
     if cap:
         cap.release()
     video_capture_global = None
     video_processing_active = False
-    await manager.broadcast({"type": "video_ended", "data": {"message": "Video processing has stopped."}})
-
+    if 'manager' in globals(): # Ensure manager is available
+        await manager.broadcast({"type": "video_ended", "data": {"message": "Video processing has stopped."}})
 
 # --- Notification Logic (from existing App Runner main.py, ensure it's robust) ---
-def notify_users_for_spot_vacancy(spot_id_int: int): # spot_id is int here
+def notify_users_for_spot_vacancy(spot_id_int: int): 
     spot_label_str = str(spot_id_int)
     logger.info(f"Attempting to notify users for newly vacant spot: {spot_label_str}")
     current_time = time.time()
     
-    # Debounce logic is now implicitly handled by `notified[spot_label_str]` in video_processor
-    # This function is called only after the delay and if not recently notified.
-
-    if not firebase_app_initialized: # Check global flag
-        logger.warning("Firebase not initialized. Skipping FCM notification for spot {spot_label_str}.")
+    if not firebase_app_initialized: 
+        logger.warning(f"Firebase not initialized. Skipping FCM notification for spot {spot_label_str}.") 
         return {"message": "Firebase not initialized."}
 
     try:
-        with Session(db_engine) as session: # Use db_engine
+        with Session(db_engine) as session: 
             device_tokens_records = session.exec(select(DeviceToken)).all()
             fcm_tokens = [record.token for record in device_tokens_records if record.token]
 
@@ -547,7 +542,6 @@ def notify_users_for_spot_vacancy(spot_id_int: int): # spot_id is int here
             message_title = "Parking Spot Available!"
             message_body = f"Spot {spot_label_str} is now free."
             
-            # Send to all tokens (can be inefficient for many tokens, consider topics)
             message = firebase_admin.messaging.MulticastMessage(
                 notification=firebase_admin.messaging.Notification(title=message_title, body=message_body),
                 tokens=fcm_tokens,
@@ -561,7 +555,7 @@ def notify_users_for_spot_vacancy(spot_id_int: int): # spot_id is int here
                         failed_tokens_details.append({"token": fcm_tokens[idx], "error": str(resp_detail.exception)})
                 logger.warning(f'FCM Failures for spot {spot_label_str}: {response.failure_count}. Details: {failed_tokens_details}')
             
-            last_fcm_notification_times[spot_label_str] = current_time # Update last notification time
+            # last_fcm_notification_times is managed by 'notified' dict in video_processor
             return {"message": f"FCM sent for spot {spot_label_str}", "success_count": response.success_count, "failure_count": response.failure_count}
 
     except Exception as e:
@@ -574,32 +568,37 @@ def notify_users_for_spot_vacancy(spot_id_int: int): # spot_id is int here
 @app.on_event("startup")
 async def startup_event():
     global video_processing_active, video_capture_global, previous_spot_states_global
-    global event_queue # Initialize event_queue here
+    global event_queue, empty_start, notified # Ensure these are global
 
     logger.info("Application startup sequence initiated...")
-    init_db() # Ensure database and tables are created
+    init_db() 
     logger.info("Database initialized.")
     
-    spot_logic.refresh_spots() # Load spots from DB
+    spot_logic.refresh_spots() 
     logger.info(f"Spots loaded from DB: {len(spot_logic.SPOTS)} spots.")
-    previous_spot_states_global = {str(spot_label): False for spot_label in spot_logic.SPOTS.keys()}
-    logger.info("Initial spot states global dict initialized.")
+    # Initialize all global state dicts based on current spots from DB
+    for spot_label_str in spot_logic.SPOTS.keys():
+        previous_spot_states_global[spot_label_str] = False 
+        empty_start[spot_label_str] = datetime.utcnow()
+        notified[spot_label_str] = False
+    logger.info("Initial global spot state dictionaries (previous_spot_states_global, empty_start, notified) initialized.")
 
-    event_queue = asyncio.Queue(maxsize=200) # Initialize asyncio.Queue
+
+    event_queue = asyncio.Queue(maxsize=200) 
     logger.info("Asyncio event queue initialized.")
     
-    asyncio.create_task(event_processor_task()) # Start the new event processor
+    asyncio.create_task(event_processor_task()) 
     logger.info("WebSocket event processor task scheduled.")
 
     if not video_processing_active:
         try:
-            # make_capture() is called inside video_processor now
             asyncio.create_task(video_processor())
             logger.info("Video processing task created on startup.")
-        except Exception as e: # Catch any error during task creation
+        except Exception as e: 
             logger.error(f"Failed to create video_processor task on startup: {e}")
             logger.error(traceback.format_exc())
-            await manager.broadcast({"type": "video_error", "data": {"error": "Video processing failed to start", "detail": str(e)}})
+            if 'manager' in globals(): # Ensure manager is available
+                await manager.broadcast({"type": "video_error", "data": {"error": "Video processing failed to start", "detail": str(e)}})
     else:
         logger.info("Video processing already marked active (should not happen on clean startup).")
     logger.info("Application startup complete.")
@@ -611,31 +610,29 @@ async def shutdown_event():
     logger.info("Application shutdown sequence initiated...")
     video_processing_active = False 
     
-    # Give tasks a moment to finish
-    # Cancel pending tasks if needed, e.g., event_processor_task
-    # For simplicity, we're relying on daemon threads or tasks ending when the loop stops.
-    
     if video_capture_global:
         logger.info("Releasing global video capture object.")
         video_capture_global.release()
         video_capture_global = None
     
-    # Wait briefly for the video_processor loop to exit
     await asyncio.sleep(0.5) 
     logger.info("Video processing signaled to stop. Application shutdown complete.")
 
 # --- API Endpoints (Spots - from existing App Runner main.py, ensure consistency) ---
 @app.get("/api/spots")
-async def get_spots_config_api(): # Renamed to avoid conflict if any
+async def get_spots_config_api(): 
     logger.info("GET /api/spots endpoint accessed.")
-    spot_logic.refresh_spots() # Ensure latest from DB
+    spot_logic.refresh_spots() 
     
-    # Augment with current status
     spots_with_status = []
-    for spot_label, (x, y, w, h) in spot_logic.SPOTS.items():
+    for spot_label, spot_coords in spot_logic.SPOTS.items(): 
+        if not isinstance(spot_coords, tuple) or len(spot_coords) != 4:
+            logger.warning(f"Skipping spot {spot_label} due to invalid coordinate data: {spot_coords}")
+            continue
+        x, y, w, h = spot_coords
         is_occupied = previous_spot_states_global.get(str(spot_label), False)
         spots_with_status.append({
-            "id": str(spot_label), # Assuming spot_label is the ID
+            "id": str(spot_label), 
             "x": x, "y": y, "w": w, "h": h,
             "is_available": not is_occupied
         })
@@ -643,54 +640,42 @@ async def get_spots_config_api(): # Renamed to avoid conflict if any
 
 
 @app.post("/api/spots")
-async def save_spots_config_api(request_body: Dict[str, List[Dict[str, Any]]], db: Session = Depends(SessionLocal)): # Use SessionLocal
-    # Expected format: {"spots": [{"id": "1", "x": 10, "y": 20, "w": 30, "h": 40}, ...]}
-    logger.info(f"POST /api/spots received data: {request_body}")
-    spots_data = request_body.get("spots")
-    if spots_data is None:
-        raise HTTPException(status_code=400, detail="Missing 'spots' key in request body.")
-    if not isinstance(spots_data, list):
-        raise HTTPException(status_code=400, detail="'spots' must be a list.")
-
+async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depends(SessionLocal)): 
+    global previous_spot_states_global # Declare intent to modify global
+    logger.info(f"POST /api/spots received data: {payload.dict()}") 
+    
     try:
-        default_camera_id = "default_camera" # Or get from request if multi-camera
+        default_camera_id = "default_camera" 
         
-        # Get existing spots from DB to find which to delete/update
         statement_existing = select(ParkingSpotConfig).where(ParkingSpotConfig.camera_id == default_camera_id)
-        existing_spot_configs = db.exec(statement_existing).all()
-        existing_labels = {config.spot_label for config in existing_spot_configs}
+        existing_spot_configs_db = db.exec(statement_existing).all()
         
-        new_spot_labels = set()
+        existing_spots_map = {config.spot_label: config for config in existing_spot_configs_db}
+        incoming_spot_labels = {spot.id for spot in payload.spots}
 
-        for spot_info in spots_data:
-            label = str(spot_info.get("id"))
-            new_spot_labels.add(label)
-            x = spot_info.get("x")
-            y = spot_info.get("y")
-            w = spot_info.get("w")
-            h = spot_info.get("h")
-
-            if not all(isinstance(val, int) for val in [x, y, w, h]):
-                db.rollback()
-                raise HTTPException(status_code=400, detail=f"Invalid coordinate types for spot {label}. Must be integers.")
-
-            existing_config = next((c for c in existing_spot_configs if c.spot_label == label), None)
-            if existing_config: # Update existing
-                existing_config.x_coord = x
-                existing_config.y_coord = y
-                existing_config.width = w
-                existing_config.height = h
-                db.add(existing_config)
-            else: # Add new
+        for spot_in in payload.spots:
+            label = spot_in.id 
+            
+            if label in existing_spots_map: 
+                config_to_update = existing_spots_map[label]
+                config_to_update.x_coord = spot_in.x
+                config_to_update.y_coord = spot_in.y
+                config_to_update.width = spot_in.w
+                config_to_update.height = spot_in.h
+                db.add(config_to_update)
+                logger.info(f"Updating spot: {label}")
+            else: 
                 new_config = ParkingSpotConfig(
                     spot_label=label, camera_id=default_camera_id,
-                    x_coord=x, y_coord=y, width=w, height=h
+                    x_coord=spot_in.x, y_coord=spot_in.y, 
+                    width=spot_in.w, height=spot_in.h
                 )
                 db.add(new_config)
+                logger.info(f"Adding new spot: {label}")
         
-        # Delete spots that were in DB but not in the new config
-        for config_to_delete in existing_spot_configs:
-            if config_to_delete.spot_label not in new_spot_labels:
+        for existing_label_in_db, config_to_delete in existing_spots_map.items():
+            if existing_label_in_db not in incoming_spot_labels:
+                logger.info(f"Deleting spot from DB: {existing_label_in_db}")
                 db.delete(config_to_delete)
 
         db.commit()
@@ -698,34 +683,46 @@ async def save_spots_config_api(request_body: Dict[str, List[Dict[str, Any]]], d
         
         spot_logic.refresh_spots() # Reload SPOTS global from DB
         
-        # Re-initialize previous_spot_states_global for any new/removed spots
-        current_labels_in_logic = set(spot_logic.SPOTS.keys())
-        for label in list(previous_spot_states_global.keys()):
-            if label not in current_labels_in_logic:
-                previous_spot_states_global.pop(label, None)
-        for label in current_labels_in_logic:
-            if label not in previous_spot_states_global:
-                 previous_spot_states_global[label] = False # Assume new spots are free
-
-        logger.info(f"Global spot states updated after config change. Current states: {previous_spot_states_global}")
-        enqueue_event({"type": "spots_config_updated", "data": spot_logic.SPOTS})
+        # Re-initialize previous_spot_states_global based on the new DB state
+        # Remove states for spots that no longer exist
+        current_db_spot_labels = set(spot_logic.SPOTS.keys())
+        for label_in_global_state in list(previous_spot_states_global.keys()):
+            if label_in_global_state not in current_db_spot_labels:
+                logger.info(f"Removing spot {label_in_global_state} from previous_spot_states_global.")
+                previous_spot_states_global.pop(label_in_global_state, None)
         
-        return {"message": "Spot configuration saved successfully", "spots": spot_logic.SPOTS}
+        # Add new spots to previous_spot_states_global, assuming they are free
+        for label_from_db in current_db_spot_labels:
+            if label_from_db not in previous_spot_states_global:
+                 logger.info(f"Adding new spot {label_from_db} to previous_spot_states_global as free.")
+                 previous_spot_states_global[label_from_db] = False 
+        # The video_processor will handle detailed initialization of empty_start and notified
+        # for these new/removed spots on its next processing cycle.
 
-    except HTTPException: # Re-raise HTTP exceptions
+        logger.info(f"Global previous_spot_states_global updated after config change. Current states: {previous_spot_states_global}")
+        
+        current_spots_for_event = []
+        for spot_label, spot_coords_event in spot_logic.SPOTS.items():
+            if isinstance(spot_coords_event, tuple) and len(spot_coords_event) == 4:
+                 current_spots_for_event.append({
+                     "id": spot_label, "x": spot_coords_event[0], "y": spot_coords_event[1],
+                     "w": spot_coords_event[2], "h": spot_coords_event[3]
+                 })
+        enqueue_event({"type": "spots_config_updated", "data": {"spots": current_spots_for_event}}) 
+        
+        return {"message": "Spot configuration saved successfully", "spots": current_spots_for_event}
+
+    except HTTPException: 
         raise
     except Exception as e:
         db.rollback()
         logger.error(f"Error saving spot configuration: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    # finally: # Session is managed by Depends, no need to close here.
-        # db.close()
-
 
 # --- MJPEG Webcam Feed ---
 @app.get("/webcam_feed")
-async def mjpeg_webcam_feed(): # Made async
+async def mjpeg_webcam_feed(): 
     logger.info("Client connected to /webcam_feed.")
     async def generate_mjpeg_frames():
         global latest_frame_with_all_overlays, frame_access_lock
@@ -733,67 +730,64 @@ async def mjpeg_webcam_feed(): # Made async
             frame_to_send = None
             async with frame_access_lock:
                 if latest_frame_with_all_overlays is not None:
-                    frame_to_send = latest_frame_with_all_overlays.copy() # Send a copy
+                    frame_to_send = latest_frame_with_all_overlays.copy() 
             
             if frame_to_send is not None:
                 try:
                     flag, encodedImage = cv2.imencode(".jpg", frame_to_send)
                     if not flag:
                         logger.warning("MJPEG: Could not encode frame as JPG.")
-                        await asyncio.sleep(0.1) # Avoid tight loop on encoding error
+                        await asyncio.sleep(0.1) 
                         continue
                     yield (b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' + 
                            bytearray(encodedImage) + b'\r\n')
                 except Exception as e_encode:
                     logger.error(f"Error encoding frame for MJPEG: {e_encode}")
-                    # Potentially break or just skip this frame
                     await asyncio.sleep(0.1)
                     continue
             else:
-                # Send a placeholder or just wait if no frame is ready
-                # For now, just wait briefly.
-                pass # logger.debug("MJPEG: No new frame ready, waiting.")
+                pass 
 
-            await asyncio.sleep(1.0 / 20) # Target ~20 FPS for MJPEG stream, adjust as needed
-                                        # This also dictates how quickly client sees updates
-                                        # if video_processor updates latest_frame_with_all_overlays faster.
+            await asyncio.sleep(1.0 / 20) 
     return StreamingResponse(generate_mjpeg_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 # --- WebSocket Endpoint (from existing App Runner main.py, ensure consistency) ---
-@app.websocket("/ws/spots") # Changed from /ws to match existing
+@app.websocket("/ws/spots") 
 async def websocket_spots_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        # Send current state upon connection
-        current_statuses_for_ws = {
-            label: {"status": "occupied" if occupied else "free", 
-                    "timestamp": datetime.utcnow().isoformat() + "Z"} 
-            for label, occupied in previous_spot_states_global.items()
-        }
+        current_statuses_for_ws = {}
+        spot_logic.refresh_spots() 
+        for label, spot_coords_ws in spot_logic.SPOTS.items():
+            if isinstance(spot_coords_ws, tuple) and len(spot_coords_ws) == 4:
+                occupied = previous_spot_states_global.get(label, False)
+                current_statuses_for_ws[label] = {
+                    "status": "occupied" if occupied else "free", 
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "x": spot_coords_ws[0], "y": spot_coords_ws[1], 
+                    "w": spot_coords_ws[2], "h": spot_coords_ws[3]
+                }
+
         initial_data = {
             "type": "all_spot_statuses",
-            "data": current_statuses_for_ws, # Send current states
+            "data": current_statuses_for_ws, 
             "timestamp": time.time()
         }
         await websocket.send_text(json.dumps(initial_data, default=str))
         
         while True:
-            # Keep connection alive, updates are broadcast by event_processor_task
-            # Handle client messages if any, or implement ping/pong
             try:
-                # Wait for a message from client or timeout for keep-alive
                 await asyncio.wait_for(websocket.receive_text(), timeout=60) 
             except asyncio.TimeoutError:
-                # Send a ping to keep connection alive if no message from client
                 await websocket.send_text(json.dumps({"type": "ping"}))
             except WebSocketDisconnect:
                 logger.info(f"WebSocket client {websocket.client} disconnected explicitly.")
-                break # Exit loop on disconnect
+                break 
             except Exception as e_ws_receive:
                 logger.error(f"Error in WebSocket receive loop for {websocket.client}: {e_ws_receive}")
-                break # Exit loop on other errors
+                break 
 
-    except WebSocketDisconnect: # Catch disconnect if it happens during connect or initial send
+    except WebSocketDisconnect: 
         logger.info(f"WebSocket client {websocket.client} disconnected.")
     except Exception as e: 
         logger.error(f"WebSocket error for {websocket.client}: {e}")
@@ -802,13 +796,13 @@ async def websocket_spots_endpoint(websocket: WebSocket):
 
 
 # --- FCM Token Registration (from existing App Runner main.py) ---
-class TokenRegistration(BaseModel): # For request body validation
+class TokenRegistration(BaseModel): 
     token: str
     platform: str = "android"
 
 @app.post("/api/register_fcm_token")
-async def register_fcm_token_api(payload: TokenRegistration, db: Session = Depends(SessionLocal)): # Use SessionLocal
-    logger.info(f"Attempting to register FCM token: {payload.token[:20]}...") # Log partial token
+async def register_fcm_token_api(payload: TokenRegistration, db: Session = Depends(SessionLocal)): 
+    logger.info(f"Attempting to register FCM token: {payload.token[:20]}...") 
     if not payload.token:
         raise HTTPException(status_code=400, detail="FCM token not provided")
 
@@ -833,11 +827,7 @@ async def register_fcm_token_api(payload: TokenRegistration, db: Session = Depen
 
 
 if __name__ == "__main__":
-    # This block is for running with `python main.py` directly (local dev)
-    # App Runner will use a command like `uvicorn app.main:app --host 0.0.0.0 --port 8000`
-    # For local testing, ensure VIDEO_SOURCE points to a local file or webcam index.
-    # And FIREBASE_CRED points to your local firebase-sa.json
-    # And DATABASE_URL points to a local/accessible DB.
     logger.info("Starting Uvicorn server for local development...")
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
