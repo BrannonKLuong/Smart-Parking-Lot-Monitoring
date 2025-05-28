@@ -540,82 +540,88 @@ async def get_spots_config_api():
         spots_with_status.append({ "id": str(spot_label), "x": x, "y": y, "w": w, "h": h, "is_available": not is_occupied })
     return {"spots": spots_with_status}
 
-@app.post("/api/spots")
-async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depends(SessionLocal)): 
-    # Using Pydantic model 'SpotsUpdateRequest' for robust validation
-    global previous_spot_states_global 
-    logger.info(f"POST /api/spots received data (validated by Pydantic): {payload.dict()}") 
+# @app.post("/api/spots")
+# async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depends(SessionLocal)): 
+#     # Using Pydantic model 'SpotsUpdateRequest' for robust validation
+#     global previous_spot_states_global 
+#     logger.info(f"POST /api/spots received data (validated by Pydantic): {payload.dict()}") 
     
-    try:
-        default_camera_id = "default_camera" 
+#     try:
+#         default_camera_id = "default_camera" 
         
-        statement_existing = select(ParkingSpotConfig).where(ParkingSpotConfig.camera_id == default_camera_id)
-        existing_spot_configs_db = db.exec(statement_existing).all()
+#         statement_existing = select(ParkingSpotConfig).where(ParkingSpotConfig.camera_id == default_camera_id)
+#         existing_spot_configs_db = db.exec(statement_existing).all()
         
-        existing_spots_map = {config.spot_label: config for config in existing_spot_configs_db}
-        incoming_spot_labels = {spot.id for spot in payload.spots} # spot.id is from SpotConfigIn
+#         existing_spots_map = {config.spot_label: config for config in existing_spot_configs_db}
+#         incoming_spot_labels = {spot.id for spot in payload.spots} # spot.id is from SpotConfigIn
 
-        for spot_in in payload.spots: # spot_in is now a validated SpotConfigIn object
-            label = spot_in.id 
+#         for spot_in in payload.spots: # spot_in is now a validated SpotConfigIn object
+#             label = spot_in.id 
             
-            if label in existing_spots_map: 
-                config_to_update = existing_spots_map[label]
-                config_to_update.x_coord = spot_in.x
-                config_to_update.y_coord = spot_in.y
-                config_to_update.width = spot_in.w
-                config_to_update.height = spot_in.h
-                db.add(config_to_update)
-                logger.info(f"Updating spot: {label}")
-            else: 
-                new_config = ParkingSpotConfig(
-                    spot_label=label, camera_id=default_camera_id,
-                    x_coord=spot_in.x, y_coord=spot_in.y, 
-                    width=spot_in.w, height=spot_in.h
-                )
-                db.add(new_config)
-                logger.info(f"Adding new spot: {label}")
+#             if label in existing_spots_map: 
+#                 config_to_update = existing_spots_map[label]
+#                 config_to_update.x_coord = spot_in.x
+#                 config_to_update.y_coord = spot_in.y
+#                 config_to_update.width = spot_in.w
+#                 config_to_update.height = spot_in.h
+#                 db.add(config_to_update)
+#                 logger.info(f"Updating spot: {label}")
+#             else: 
+#                 new_config = ParkingSpotConfig(
+#                     spot_label=label, camera_id=default_camera_id,
+#                     x_coord=spot_in.x, y_coord=spot_in.y, 
+#                     width=spot_in.w, height=spot_in.h
+#                 )
+#                 db.add(new_config)
+#                 logger.info(f"Adding new spot: {label}")
         
-        for existing_label_in_db, config_to_delete in existing_spots_map.items():
-            if existing_label_in_db not in incoming_spot_labels:
-                logger.info(f"Deleting spot from DB: {existing_label_in_db}")
-                db.delete(config_to_delete)
+#         for existing_label_in_db, config_to_delete in existing_spots_map.items():
+#             if existing_label_in_db not in incoming_spot_labels:
+#                 logger.info(f"Deleting spot from DB: {existing_label_in_db}")
+#                 db.delete(config_to_delete)
 
-        db.commit()
-        logger.info("Spot configuration saved successfully to database.")
+#         db.commit()
+#         logger.info("Spot configuration saved successfully to database.")
         
-        spot_logic.refresh_spots() 
+#         spot_logic.refresh_spots() 
         
-        current_db_spot_labels = set(spot_logic.SPOTS.keys())
-        for label_in_global_state in list(previous_spot_states_global.keys()):
-            if label_in_global_state not in current_db_spot_labels:
-                logger.info(f"Removing spot {label_in_global_state} from previous_spot_states_global.")
-                previous_spot_states_global.pop(label_in_global_state, None)
+#         current_db_spot_labels = set(spot_logic.SPOTS.keys())
+#         for label_in_global_state in list(previous_spot_states_global.keys()):
+#             if label_in_global_state not in current_db_spot_labels:
+#                 logger.info(f"Removing spot {label_in_global_state} from previous_spot_states_global.")
+#                 previous_spot_states_global.pop(label_in_global_state, None)
         
-        for label_from_db in current_db_spot_labels:
-            if label_from_db not in previous_spot_states_global:
-                 logger.info(f"Adding new spot {label_from_db} to previous_spot_states_global as free.")
-                 previous_spot_states_global[label_from_db] = False 
+#         for label_from_db in current_db_spot_labels:
+#             if label_from_db not in previous_spot_states_global:
+#                  logger.info(f"Adding new spot {label_from_db} to previous_spot_states_global as free.")
+#                  previous_spot_states_global[label_from_db] = False 
         
-        logger.info(f"Global previous_spot_states_global updated after config change. Current states: {previous_spot_states_global}")
+#         logger.info(f"Global previous_spot_states_global updated after config change. Current states: {previous_spot_states_global}")
         
-        current_spots_for_event = []
-        for spot_label, spot_coords_event in spot_logic.SPOTS.items():
-            if isinstance(spot_coords_event, tuple) and len(spot_coords_event) == 4:
-                 current_spots_for_event.append({
-                     "id": spot_label, "x": spot_coords_event[0], "y": spot_coords_event[1],
-                     "w": spot_coords_event[2], "h": spot_coords_event[3]
-                 })
-        enqueue_event({"type": "spots_config_updated", "data": {"spots": current_spots_for_event}}) 
+#         current_spots_for_event = []
+#         for spot_label, spot_coords_event in spot_logic.SPOTS.items():
+#             if isinstance(spot_coords_event, tuple) and len(spot_coords_event) == 4:
+#                  current_spots_for_event.append({
+#                      "id": spot_label, "x": spot_coords_event[0], "y": spot_coords_event[1],
+#                      "w": spot_coords_event[2], "h": spot_coords_event[3]
+#                  })
+#         enqueue_event({"type": "spots_config_updated", "data": {"spots": current_spots_for_event}}) 
         
-        return {"message": "Spot configuration saved successfully", "spots": current_spots_for_event}
+#         return {"message": "Spot configuration saved successfully", "spots": current_spots_for_event}
 
-    except HTTPException: # Re-raise FastAPI's own HTTPExceptions (like 422 from Pydantic)
-        raise
-    except Exception as e: # Catch other unexpected errors
-        db.rollback()
-        logger.error(f"Error saving spot configuration: {e}")
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+#     except HTTPException: # Re-raise FastAPI's own HTTPExceptions (like 422 from Pydantic)
+#         raise
+#     except Exception as e: # Catch other unexpected errors
+#         db.rollback()
+#         logger.error(f"Error saving spot configuration: {e}")
+#         logger.error(traceback.format_exc())
+#         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@app.post("/api/spots")
+async def save_spots_config_api_TEMPORARY_TEST(request: Request):
+    body = await request.json() # Try to get the JSON body
+    logger.info(f"--- TEMPORARY TEST for /api/spots received BODY: {body} ---")
+    return {"status": "temporary test endpoint hit successfully", "received_body": body}
 
 @app.get("/webcam_feed")
 async def mjpeg_webcam_feed(): 
