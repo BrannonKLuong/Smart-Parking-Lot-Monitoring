@@ -17,6 +17,9 @@ RUN apt-get update && \
 # Ensure paths for copied files like videos and secrets are correct relative to the build context (backend/)
 COPY videos/test_video.mov /app/videos/test_video.mov
 COPY secrets/firebase-sa.json /app/secrets/firebase-sa.json
+COPY inference /app/inference 
+COPY yolov8n.pt /app/yolov8n.pt
+
 
 EXPOSE 8000
 
