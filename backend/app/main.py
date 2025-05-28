@@ -14,6 +14,8 @@ import logging
 from datetime import datetime, timedelta 
 from pathlib import Path 
 from pydantic import BaseModel, Field as PydanticField 
+import base64 # Added for decoding base64 frames
+import numpy as np # Added for OpenCV frame conversion
 
 # AWS SDK for Python
 import boto3
@@ -50,6 +52,7 @@ if not DATABASE_URL:
 FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED")
 FCM_VACANCY_DELAY_SECONDS = int(os.getenv("FCM_VACANCY_DELAY_SECONDS", "5")) 
 VIDEO_PROCESSING_FPS = int(os.getenv("VIDEO_PROCESSING_FPS", "2")) 
+VIDEO_SOURCE_TYPE_ENV = os.getenv("VIDEO_SOURCE_TYPE", "FILE").upper() # Get video source type once
 
 # --- Firebase Initialization ---
 firebase_app_initialized = False
@@ -57,15 +60,13 @@ if FIREBASE_CRED_PATH:
     if os.path.exists(FIREBASE_CRED_PATH):
         try:
             logger.info(f"Attempting to read Firebase cred file at: {FIREBASE_CRED_PATH}")
-            # ---- Add these lines for debugging Firebase JSON ----
             try:
                 with open(FIREBASE_CRED_PATH, 'r', encoding='utf-8') as f:
-                    content_sample = f.read(200) # Read first 200 chars
+                    content_sample = f.read(200) 
                     logger.info(f"First 200 chars of Firebase cred file (raw, repr): {repr(content_sample)}")
                     logger.info(f"First 200 chars of Firebase cred file (decoded): {content_sample}")
             except Exception as e_read:
                 logger.error(f"Error reading Firebase cred file for debugging: {e_read}")
-            # ---- End of debug block ----
 
             if not firebase_admin._apps:
                 cred = credentials.Certificate(FIREBASE_CRED_PATH)
@@ -78,7 +79,7 @@ if FIREBASE_CRED_PATH:
         except Exception as e:
             logger.error(f"Error initializing Firebase Admin SDK: {e}")
             logger.error("Full traceback for Firebase initialization error:")
-            logger.error(traceback.format_exc()) # This will print the full stack trace
+            logger.error(traceback.format_exc()) 
     else:
         logger.warning(f"Firebase credentials file not found at path: {FIREBASE_CRED_PATH}. FCM notifications will be disabled.")
 else:
@@ -98,7 +99,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Pydantic Models for API Spot Configuration (Robust approach) ---
+# --- Pydantic Models for API Spot Configuration ---
 class SpotConfigIn(BaseModel):
     id: str 
     x: int
@@ -114,6 +115,7 @@ async def root():
     logger.info("Root path / accessed (health check).")
     return {"message": "Smart Parking API is running"}
 
+# --- WebSocket Connection Manager for Spot Updates ---
 class ConnectionManager:
     def __init__(self):
         self.active_connections: List[WebSocket] = []
@@ -153,6 +155,9 @@ class ConnectionManager:
 manager = ConnectionManager()
 event_queue: Optional[asyncio.Queue] = None
 
+# --- Queue for incoming video frames from WebSocket ---
+video_frame_queue: asyncio.Queue = asyncio.Queue(maxsize=3) # Max 100 frames in queue
+
 async def event_processor_task():
     global event_queue
     if event_queue is None:
@@ -189,12 +194,13 @@ video_capture_global: Optional[cv2.VideoCapture] = None
 previous_spot_states_global: Dict[str, bool] = {} 
 latest_frame_with_all_overlays: Optional[Any] = None 
 frame_access_lock = asyncio.Lock() 
-yolo_results_lock = asyncio.Lock() 
+yolo_results_lock = asyncio.Lock() # Although not explicitly used in detect, good for future if detect becomes async
 last_fcm_notification_times: Dict[str, float] = {} 
 empty_start: Dict[str, Optional[datetime]] = {} 
 notified: Dict[str, bool] = {} 
 
 def get_kvs_hls_url(stream_name_or_arn, region_name=os.getenv("AWS_REGION", "us-east-2")):
+    # (Existing KVS HLS URL fetching logic - unchanged)
     try:
         logger.info(f"Attempting to get HLS URL for KVS stream: {stream_name_or_arn} in region {region_name}")
         kvs_client = boto3.client('kinesisvideo', region_name=region_name)
@@ -218,24 +224,33 @@ def get_kvs_hls_url(stream_name_or_arn, region_name=os.getenv("AWS_REGION", "us-
         return None
 
 def make_capture():
+    # (Existing make_capture logic - largely unchanged, used if VIDEO_SOURCE_TYPE is not WEBSOCKET_STREAM)
     global video_capture_global
-    env_video_source_type = os.getenv("VIDEO_SOURCE_TYPE")
+    # VIDEO_SOURCE_TYPE_ENV is now a global, set at startup
     env_video_source_value = os.getenv("VIDEO_SOURCE")
-    logger.info(f"--- make_capture called. Raw Env Vars: VIDEO_SOURCE_TYPE='{env_video_source_type}', VIDEO_SOURCE='{env_video_source_value}' ---")
-    video_source_type = env_video_source_type.upper() if env_video_source_type else "FILE" 
+    logger.info(f"--- make_capture called. Video Source Type (from env): '{VIDEO_SOURCE_TYPE_ENV}', Value: '{env_video_source_value}' ---")
+    
+    # This function is now only relevant if not using WEBSOCKET_STREAM
+    if VIDEO_SOURCE_TYPE_ENV == "WEBSOCKET_STREAM":
+        logger.info("make_capture: VIDEO_SOURCE_TYPE is WEBSOCKET_STREAM. No cv2.VideoCapture will be created here.")
+        return None
+
     video_source_value = env_video_source_value
     aws_region = os.getenv("AWS_REGION", "us-east-2")
     default_video_file = "/app/videos/test_video.mov" 
-    if video_source_type == "FILE" and not video_source_value:
+
+    if VIDEO_SOURCE_TYPE_ENV == "FILE" and not video_source_value:
         video_source_value = default_video_file
         logger.info(f"VIDEO_SOURCE not set for FILE type, defaulting to: {default_video_file}")
-    elif not video_source_value and video_source_type != "WEBCAM_INDEX": 
-         logger.error(f"Error: VIDEO_SOURCE environment variable not set for VIDEO_SOURCE_TYPE: {video_source_type}")
-         raise RuntimeError(f"VIDEO_SOURCE not set for {video_source_type}")
-    logger.info(f"Attempting to set up video source. Type: {video_source_type}, Value: {video_source_value}, Region (if KVS): {aws_region}")
+    elif not video_source_value and VIDEO_SOURCE_TYPE_ENV not in ["WEBCAM_INDEX", "WEBSOCKET_STREAM"]: 
+         logger.error(f"Error: VIDEO_SOURCE environment variable not set for VIDEO_SOURCE_TYPE: {VIDEO_SOURCE_TYPE_ENV}")
+         raise RuntimeError(f"VIDEO_SOURCE not set for {VIDEO_SOURCE_TYPE_ENV}")
+
+    logger.info(f"Attempting to set up video source. Type: {VIDEO_SOURCE_TYPE_ENV}, Value: {video_source_value}, Region (if KVS): {aws_region}")
     cap = None
     hls_url_used = None
-    if video_source_type == "KVS_STREAM":
+
+    if VIDEO_SOURCE_TYPE_ENV == "KVS_STREAM":
         if not video_source_value:
             raise RuntimeError("VIDEO_SOURCE (KVS stream name) not set for KVS_STREAM type.")
         hls_url_used = get_kvs_hls_url(stream_name_or_arn=video_source_value, region_name=aws_region)
@@ -250,13 +265,13 @@ def make_capture():
         else:
             logger.error(f"Could not get HLS URL for KVS stream: {video_source_value}")
             raise RuntimeError("Failed to get KVS HLS URL from AWS.")
-    elif video_source_type == "FILE":
+    elif VIDEO_SOURCE_TYPE_ENV == "FILE":
         logger.info(f"Attempting to open video file: {video_source_value}")
         if not os.path.exists(video_source_value): 
             logger.error(f"Video file not found at path: {video_source_value}")
             raise RuntimeError(f"Video file not found: {video_source_value}")
         cap = cv2.VideoCapture(video_source_value) 
-    elif video_source_type == "WEBCAM_INDEX":
+    elif VIDEO_SOURCE_TYPE_ENV == "WEBCAM_INDEX":
         try:
             idx = int(video_source_value if video_source_value is not None else "0") 
             logger.info(f"Attempting to open webcam index: {idx}")
@@ -264,41 +279,54 @@ def make_capture():
         except ValueError:
             logger.error(f"Invalid webcam index: {video_source_value}")
             raise RuntimeError(f"Invalid webcam index: {video_source_value}")
-    else: 
+    elif VIDEO_SOURCE_TYPE_ENV not in ["WEBSOCKET_STREAM"]: # Other URL types
         if not video_source_value:
-            raise RuntimeError(f"VIDEO_SOURCE not set for URL type: {video_source_type}")
+            raise RuntimeError(f"VIDEO_SOURCE not set for URL type: {VIDEO_SOURCE_TYPE_ENV}")
         logger.info(f"Attempting to open direct video URL: {video_source_value}")
         cap = cv2.VideoCapture(video_source_value, cv2.CAP_FFMPEG)
-    if cap is None or not cap.isOpened():
-        current_source_for_error = hls_url_used if video_source_type == "KVS_STREAM" and hls_url_used else video_source_value
-        error_msg = f"FATAL: Could not open video source. Type='{video_source_type}', SourceValue='{video_source_value}', EffectivePathForOpenCV='{current_source_for_error}'"
-        logger.error(error_msg)
-        raise RuntimeError(error_msg) 
-    logger.info(f"Successfully opened video source using: {video_source_value if video_source_type != 'KVS_STREAM' else 'KVS HLS Stream'}")
-    video_capture_global = cap
+    
+    if VIDEO_SOURCE_TYPE_ENV != "WEBSOCKET_STREAM":
+        if cap is None or not cap.isOpened():
+            current_source_for_error = hls_url_used if VIDEO_SOURCE_TYPE_ENV == "KVS_STREAM" and hls_url_used else video_source_value
+            error_msg = f"FATAL: Could not open video source. Type='{VIDEO_SOURCE_TYPE_ENV}', SourceValue='{video_source_value}', EffectivePathForOpenCV='{current_source_for_error}'"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) 
+        logger.info(f"Successfully opened video source using: {video_source_value if VIDEO_SOURCE_TYPE_ENV != 'KVS_STREAM' else 'KVS HLS Stream'}")
+        video_capture_global = cap
     return cap
+
 
 async def video_processor():
     global video_processing_active, video_capture_global, previous_spot_states_global
     global latest_frame_with_all_overlays, frame_access_lock, last_fcm_notification_times
-    global empty_start, notified 
-    cap = None
-    try:
-        logger.info("Video_processor: Attempting to initialize video capture...")
-        cap = make_capture() 
-        video_capture_global = cap 
-    except RuntimeError as e:
-        logger.error(f"Video_processor: CRITICAL - Failed to initialize video capture on startup: {e}")
-        video_processing_active = False
-        if 'manager' in globals():
-             await manager.broadcast({"type": "video_error", "data": {"error": "Video source failed on startup", "detail": str(e)}})
-        return 
-    logger.info("Video_processor: Video capture initialized. Starting processing loop.")
+    global empty_start, notified, video_frame_queue
+
+    cap = None # For cv2.VideoCapture if used
+    
+    # Determine processing mode based on environment variable
+    is_websocket_stream_mode = (VIDEO_SOURCE_TYPE_ENV == "WEBSOCKET_STREAM")
+
+    if not is_websocket_stream_mode:
+        try:
+            logger.info("Video_processor: Initializing video capture via make_capture()...")
+            cap = make_capture() 
+            video_capture_global = cap 
+        except RuntimeError as e:
+            logger.error(f"Video_processor: CRITICAL - Failed to initialize video capture on startup: {e}")
+            video_processing_active = False
+            if 'manager' in globals():
+                 await manager.broadcast({"type": "video_error", "data": {"error": "Video source failed on startup", "detail": str(e)}})
+            return 
+        logger.info("Video_processor: Video capture initialized via make_capture(). Starting processing loop.")
+    else:
+        logger.info("Video_processor: Mode is WEBSOCKET_STREAM. Will process frames from video_frame_queue.")
+
     video_processing_active = True
     VACANCY_DELAY = timedelta(seconds=FCM_VACANCY_DELAY_SECONDS)
     vehicle_classes = {"car", "truck", "bus", "motorbike", "bicycle"} 
     loop = asyncio.get_event_loop()
     spot_logic.refresh_spots() 
+
     for spot_label_str in spot_logic.SPOTS.keys():
         if spot_label_str not in previous_spot_states_global: 
             previous_spot_states_global[spot_label_str] = False 
@@ -307,54 +335,99 @@ async def video_processor():
         if spot_label_str not in notified:
             notified[spot_label_str] = False
     logger.info(f"Initial spot states after refresh: {previous_spot_states_global}")
+    
     frame_count = 0
-    source_fps = cap.get(cv2.CAP_PROP_FPS) if cap else 0
+    source_fps = 0
+    if cap: # Only if using cv2.VideoCapture
+        source_fps = cap.get(cv2.CAP_PROP_FPS) 
+    
     frame_skip_interval = 0
     if source_fps > 0 and VIDEO_PROCESSING_FPS > 0 and VIDEO_PROCESSING_FPS < source_fps:
         frame_skip_interval = int(source_fps / VIDEO_PROCESSING_FPS)
-    logger.info(f"Source FPS: {source_fps}, Target Processing FPS: {VIDEO_PROCESSING_FPS}, Frame skip interval: {frame_skip_interval}")
+    logger.info(f"Source FPS (if applicable): {source_fps}, Target Processing FPS: {VIDEO_PROCESSING_FPS}, Frame skip interval (if applicable): {frame_skip_interval}")
+
     while video_processing_active:
-        if cap is None or not cap.isOpened():
-            logger.warning("Video_processor: Video capture became un-opened. Attempting to re-initialize...")
+        frame = None
+        ret = False
+
+        if is_websocket_stream_mode: # This is VIDEO_SOURCE_TYPE_ENV == "WEBSOCKET_STREAM"
             try:
-                if cap: cap.release()
-                cap = make_capture()
-                video_capture_global = cap
-                source_fps = cap.get(cv2.CAP_PROP_FPS) if cap else 0 
-                if source_fps > 0 and VIDEO_PROCESSING_FPS > 0 and VIDEO_PROCESSING_FPS < source_fps:
-                    frame_skip_interval = int(source_fps / VIDEO_PROCESSING_FPS)
-                logger.info(f"Video_processor: Re-initialized video capture. New Source FPS: {source_fps}, Frame skip: {frame_skip_interval}")
-                frame_count = 0 
-            except RuntimeError as e:
-                logger.error(f"Video_processor: Failed to re-initialize video capture: {e}. Stopping processing.")
-                video_processing_active = False
-                await manager.broadcast({"type": "video_error", "data": {"error": "Video source lost", "detail": str(e)}})
-                break
-            except Exception as e_generic_reopen:
-                logger.error(f"Video_processor: Generic error re-opening capture: {e_generic_reopen}. Stopping.")
-                video_processing_active = False
-                break
-        ret, frame = cap.read()
+                logger.info("VIDEO_PROCESSOR: Attempting to GET frame from video_frame_queue...") # <--- ADD THIS
+                frame_data_url = await asyncio.wait_for(video_frame_queue.get(), timeout=1.0)
+                logger.info(f"VIDEO_PROCESSOR: GOT frame_data_url from queue (first 100 chars): {frame_data_url[:100]}") # <--- ADD THIS
+
+                if frame_data_url.startswith('data:image/jpeg;base64,'):
+                    base64_str = frame_data_url.split(',', 1)[1]
+                    img_bytes = base64.b64decode(base64_str)
+                    np_arr = np.frombuffer(img_bytes, np.uint8)
+                    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+                    if frame is not None:
+                        ret = True
+                        video_frame_queue.task_done()
+                        logger.info("VIDEO_PROCESSOR: Frame successfully decoded from base64.") # <--- ADD THIS
+                    else:
+                        logger.warning("VIDEO_PROCESSOR (WebSocket): Failed to decode frame from base64.")
+                # ... rest of the try block ...
+            except asyncio.TimeoutError:
+                logger.debug("VIDEO_PROCESSOR (WebSocket): Timeout getting frame from queue. Queue might be empty.") # <--- Change to INFO if you want to see this often
+                await asyncio.sleep(0.01) 
+                continue 
+            except Exception as e_ws_frame:
+                logger.error(f"VIDEO_PROCESSOR (WebSocket): Error processing frame from queue: {e_ws_frame}")
+                await asyncio.sleep(0.1)
+                continue
+        else: # Traditional cv2.VideoCapture mode
+            if cap is None or not cap.isOpened():
+                logger.warning("Video_processor: Video capture became un-opened. Attempting to re-initialize...")
+                try:
+                    if cap: cap.release()
+                    cap = make_capture()
+                    video_capture_global = cap
+                    source_fps = cap.get(cv2.CAP_PROP_FPS) if cap else 0 
+                    if source_fps > 0 and VIDEO_PROCESSING_FPS > 0 and VIDEO_PROCESSING_FPS < source_fps:
+                        frame_skip_interval = int(source_fps / VIDEO_PROCESSING_FPS)
+                    logger.info(f"Video_processor: Re-initialized video capture. New Source FPS: {source_fps}, Frame skip: {frame_skip_interval}")
+                    frame_count = 0 
+                except RuntimeError as e:
+                    logger.error(f"Video_processor: Failed to re-initialize video capture: {e}. Stopping processing.")
+                    video_processing_active = False
+                    await manager.broadcast({"type": "video_error", "data": {"error": "Video source lost", "detail": str(e)}})
+                    break
+                except Exception as e_generic_reopen:
+                    logger.error(f"Video_processor: Generic error re-opening capture: {e_generic_reopen}. Stopping.")
+                    video_processing_active = False
+                    break
+            
+            ret, frame = cap.read()
+
         if not ret or frame is None:
-            logger.warning("Video_processor: Failed to grab frame or frame is None. Attempting to reopen.")
-            if cap: cap.release()
-            await asyncio.sleep(2) 
-            try:
-                cap = make_capture()
-                video_capture_global = cap
-                if not (cap and cap.isOpened()): 
-                    logger.error("Video_processor: Failed to re-open capture. Stopping."); break
-                logger.info("Video_processor: Successfully re-opened capture.")
-            except Exception as e: 
-                logger.error(f"Video_processor: Error re-opening capture: {e}. Stopping."); break
+            if not is_websocket_stream_mode: # Only log/retry for non-websocket mode here
+                logger.warning("Video_processor: Failed to grab frame or frame is None. Attempting to reopen.")
+                if cap: cap.release()
+                await asyncio.sleep(2) 
+                try:
+                    cap = make_capture()
+                    video_capture_global = cap
+                    if not (cap and cap.isOpened()): 
+                        logger.error("Video_processor: Failed to re-open capture. Stopping."); break
+                    logger.info("Video_processor: Successfully re-opened capture.")
+                except Exception as e: 
+                    logger.error(f"Video_processor: Error re-opening capture: {e}. Stopping."); break
+            else: # For websocket mode, if frame is None after decode, just continue
+                await asyncio.sleep(0.01)
             continue
+        
         frame_count += 1
-        if frame_skip_interval > 0 and frame_count % (frame_skip_interval + 1) != 0:
+        # Frame skipping logic (only for non-websocket mode, or if FPS is set for websocket)
+        if not is_websocket_stream_mode and frame_skip_interval > 0 and frame_count % (frame_skip_interval + 1) != 0:
             await asyncio.sleep(0.001) 
             continue
+        
+        # --- Common Frame Processing Logic ---
         yolo_results_list = None
         vehicle_boxes_for_spot_logic = [] 
         try:
+            # Run detection in executor to avoid blocking the event loop
             yolo_results_list = await loop.run_in_executor(None, detect, frame.copy()) 
             if yolo_results_list: 
                 for res in yolo_results_list:
@@ -366,16 +439,17 @@ async def video_processor():
                             cls_idx = int(cls_idx_float)
                             if cls_idx in class_names_map and class_names_map[cls_idx] in vehicle_classes:
                                 vehicle_boxes_for_spot_logic.append(boxes_coords[i])
-                            elif cls_idx < 100: 
-                                if class_names_map and cls_idx >= len(class_names_map) :
-                                     logger.warning(f"Class index {cls_idx} out of bounds for class_names_map (len: {len(class_names_map)}). Detection skipped.")
+                            # (Optional: logging for out-of-bounds class indices, if needed)
         except Exception as e_detect:
             logger.error(f"Video_processor: Error during YOLO detection: {e_detect}")
             logger.error(traceback.format_exc())
             vehicle_boxes_for_spot_logic = [] 
+
         current_detected_occupancy: Dict[str, bool] = {} 
-        spot_logic.refresh_spots() 
+        spot_logic.refresh_spots() # Ensure SPOTS dict is up-to-date
         active_spot_labels = set(spot_logic.SPOTS.keys())
+
+        # (Spot state update logic - largely unchanged)
         for label_str in list(previous_spot_states_global.keys()):
             if label_str not in active_spot_labels:
                 logger.info(f"Spot {label_str} removed from config, cleaning up its state in video_processor.")
@@ -388,6 +462,7 @@ async def video_processor():
                 previous_spot_states_global[spot_label_str] = False 
                 empty_start[spot_label_str] = datetime.utcnow()
                 notified[spot_label_str] = False
+        
         for spot_label_str, spot_coords in spot_logic.SPOTS.items():
             if not isinstance(spot_coords, tuple) or len(spot_coords) != 4:
                 logger.error(f"Invalid spot_coords for {spot_label_str}: {spot_coords}. Skipping this spot in occupancy check.")
@@ -398,10 +473,12 @@ async def video_processor():
                 for bx1, by1, bx2, by2 in vehicle_boxes_for_spot_logic
             )
             current_detected_occupancy[spot_label_str] = is_occupied_now
+        
         now = datetime.utcnow()
         for spot_label_str in spot_logic.SPOTS.keys(): 
             was_occupied = previous_spot_states_global.get(spot_label_str, False) 
             is_now_occupied = current_detected_occupancy.get(spot_label_str, False) 
+
             if was_occupied != is_now_occupied:
                 logger.info(f"Spot {spot_label_str} changed: {'Free' if was_occupied else 'Occupied'} -> {'Occupied' if is_now_occupied else 'Free'}")
                 event_data = { "type": "spot_update", "data": { "spot_id": spot_label_str, "timestamp": now.isoformat() + "Z", "status": "occupied" if is_now_occupied else "free" } }
@@ -411,6 +488,7 @@ async def video_processor():
                 else: 
                     empty_start[spot_label_str] = now
                     notified[spot_label_str] = False 
+            
             if not is_now_occupied and empty_start.get(spot_label_str) and not notified.get(spot_label_str, False):
                 if (now - empty_start[spot_label_str]) >= VACANCY_DELAY:
                     logger.info(f"Spot {spot_label_str} confirmed vacant for {VACANCY_DELAY}, attempting FCM notification.")
@@ -429,7 +507,9 @@ async def video_processor():
                         logger.error(f"Error during FCM notification for spot {spot_label_str}: {e_fcm}")
                         logger.error(traceback.format_exc())
             previous_spot_states_global[spot_label_str] = is_now_occupied 
-        frame_to_display = frame.copy()
+        
+        frame_to_display = frame.copy() # Make a copy for drawing
+        # (Drawing logic - unchanged)
         for spot_label_str_draw, spot_coords_draw in spot_logic.SPOTS.items():
             if not isinstance(spot_coords_draw, tuple) or len(spot_coords_draw) != 4:
                 continue 
@@ -440,10 +520,20 @@ async def video_processor():
             cv2.putText(frame_to_display, spot_label_str_draw, (sx_draw, sy_draw - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         for bx1, by1, bx2, by2 in vehicle_boxes_for_spot_logic:
             cv2.rectangle(frame_to_display, (int(bx1), int(by1)), (int(bx2), int(by2)), (0, 255, 255), 1) 
+        
         async with frame_access_lock:
-            global latest_frame_with_all_overlays
             latest_frame_with_all_overlays = frame_to_display
-        await asyncio.sleep(max(0.01, (1.0 / VIDEO_PROCESSING_FPS))) 
+        
+        # Sleep duration depends on mode
+        if is_websocket_stream_mode:
+            # For WebSocket, processing speed is dictated by incoming frames + VIDEO_PROCESSING_FPS
+            # If VIDEO_PROCESSING_FPS is high, this sleep might be very short or zero.
+            # If frames come faster than VIDEO_PROCESSING_FPS, queue might build up.
+            # If frames come slower, it processes as they arrive.
+            await asyncio.sleep(max(0.001, (1.0 / VIDEO_PROCESSING_FPS) - 0.01)) # Small adjustment for processing time
+        else: # cv2.VideoCapture mode
+            await asyncio.sleep(max(0.01, (1.0 / VIDEO_PROCESSING_FPS))) 
+
     logger.info("Video_processor: Processing loop stopped.")
     if cap:
         cap.release()
@@ -453,6 +543,7 @@ async def video_processor():
         await manager.broadcast({"type": "video_ended", "data": {"message": "Video processing has stopped."}})
 
 def notify_users_for_spot_vacancy(spot_id_int: int): 
+    # (Existing FCM notification logic - unchanged)
     spot_label_str = str(spot_id_int)
     logger.info(f"Attempting to notify users for newly vacant spot: {spot_label_str}")
     current_time = time.time()
@@ -485,6 +576,7 @@ def notify_users_for_spot_vacancy(spot_id_int: int):
 
 @app.on_event("startup")
 async def startup_event():
+    # (Existing startup logic - largely unchanged)
     global video_processing_active, video_capture_global, previous_spot_states_global
     global event_queue, empty_start, notified 
     logger.info("Application startup sequence initiated...")
@@ -516,6 +608,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    # (Existing shutdown logic - unchanged)
     global video_processing_active, video_capture_global
     logger.info("Application shutdown sequence initiated...")
     video_processing_active = False 
@@ -523,11 +616,14 @@ async def shutdown_event():
         logger.info("Releasing global video capture object.")
         video_capture_global.release()
         video_capture_global = None
+    # Ensure video_frame_queue is emptied or handled if needed, though tasks should cancel
+    logger.info("Signaling video_frame_queue consumers to stop (implicitly by video_processing_active=False)")
     await asyncio.sleep(0.5) 
     logger.info("Video processing signaled to stop. Application shutdown complete.")
 
 @app.get("/api/spots")
 async def get_spots_config_api(): 
+    # (Existing API spots GET logic - unchanged)
     logger.info("GET /api/spots endpoint accessed.")
     spot_logic.refresh_spots() 
     spots_with_status = []
@@ -542,25 +638,19 @@ async def get_spots_config_api():
 
 @app.post("/api/spots")
 async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depends(SessionLocal)): 
+    # (Existing API spots POST logic - unchanged)
     global previous_spot_states_global 
     logger.info("--- save_spots_config_api V3 EXECUTING (Pydantic version) ---")
-    # ---- END OF UNIQUE LOG LINE ----
-
     global previous_spot_states_global 
     logger.info(f"POST /api/spots received data (validated by Pydantic): {payload.dict()}") 
-
     try:
         default_camera_id = "default_camera" 
-        
         statement_existing = select(ParkingSpotConfig).where(ParkingSpotConfig.camera_id == default_camera_id)
         existing_spot_configs_db = db.exec(statement_existing).all()
-        
         existing_spots_map = {config.spot_label: config for config in existing_spot_configs_db}
         incoming_spot_labels = {spot.id for spot in payload.spots} 
-
         for spot_in in payload.spots: 
             label = spot_in.id 
-            
             if label in existing_spots_map: 
                 config_to_update = existing_spots_map[label]
                 config_to_update.x_coord = spot_in.x
@@ -577,30 +667,23 @@ async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depen
                 )
                 db.add(new_config)
                 logger.info(f"Adding new spot: {label}")
-        
         for existing_label_in_db, config_to_delete in existing_spots_map.items():
             if existing_label_in_db not in incoming_spot_labels:
                 logger.info(f"Deleting spot from DB: {existing_label_in_db}")
                 db.delete(config_to_delete)
-
         db.commit()
         logger.info("Spot configuration saved successfully to database.")
-        
         spot_logic.refresh_spots() 
-        
         current_db_spot_labels = set(spot_logic.SPOTS.keys())
         for label_in_global_state in list(previous_spot_states_global.keys()):
             if label_in_global_state not in current_db_spot_labels:
                 logger.info(f"Removing spot {label_in_global_state} from previous_spot_states_global.")
                 previous_spot_states_global.pop(label_in_global_state, None)
-        
         for label_from_db in current_db_spot_labels:
             if label_from_db not in previous_spot_states_global:
                  logger.info(f"Adding new spot {label_from_db} to previous_spot_states_global as free.")
                  previous_spot_states_global[label_from_db] = False 
-        
         logger.info(f"Global previous_spot_states_global updated after config change. Current states: {previous_spot_states_global}")
-        
         current_spots_for_event = []
         for spot_label, spot_coords_event in spot_logic.SPOTS.items():
             if isinstance(spot_coords_event, tuple) and len(spot_coords_event) == 4:
@@ -609,9 +692,7 @@ async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depen
                      "w": spot_coords_event[2], "h": spot_coords_event[3]
                  })
         enqueue_event({"type": "spots_config_updated", "data": {"spots": current_spots_for_event}}) 
-        
         return {"message": "Spot configuration saved successfully", "spots": current_spots_for_event}
-
     except HTTPException: 
         raise
     except Exception as e: 
@@ -622,6 +703,7 @@ async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depen
 
 @app.get("/webcam_feed")
 async def mjpeg_webcam_feed(): 
+    # (Existing MJPEG feed logic - unchanged)
     logger.info("Client connected to /webcam_feed.")
     async def generate_mjpeg_frames():
         global latest_frame_with_all_overlays, frame_access_lock
@@ -643,12 +725,13 @@ async def mjpeg_webcam_feed():
                     await asyncio.sleep(0.1)
                     continue
             else:
-                pass 
-            await asyncio.sleep(1.0 / 20) 
+                pass # logger.debug("MJPEG: No frame available to send.") # Potentially too verbose
+            await asyncio.sleep(1.0 / 20) # Target ~20 FPS for MJPEG stream
     return StreamingResponse(generate_mjpeg_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.websocket("/ws/spots") 
 async def websocket_spots_endpoint(websocket: WebSocket):
+    # (Existing WebSocket for spot status - unchanged)
     await manager.connect(websocket)
     try:
         current_statuses_for_ws = {}
@@ -677,12 +760,57 @@ async def websocket_spots_endpoint(websocket: WebSocket):
     finally:
         await manager.disconnect(websocket)
 
+# --- NEW: WebSocket Endpoint for Video Frame Upload ---
+@app.websocket("/ws/video_stream_upload")
+async def websocket_video_upload_endpoint(websocket: WebSocket):
+    global video_frame_queue
+    await websocket.accept()
+    logger.info(f"Client connected to /ws/video_stream_upload: {websocket.client}") # You already have this
+    try:
+        while True:
+            data = await websocket.receive_text() # Expecting base64 encoded JPEG data URL
+            logger.info(f"DATA RECEIVED on /ws/video_stream_upload (first 100 chars): {data[:100]}") # <--- ADD THIS
+
+            if not video_processing_active and VIDEO_SOURCE_TYPE_ENV != "WEBSOCKET_STREAM":
+                logger.warning(f"Received frame from {websocket.client} but video processing is not active or not in WebSocket mode. Ignoring.")
+                await asyncio.sleep(0.1) 
+                continue
+
+            if VIDEO_SOURCE_TYPE_ENV == "WEBSOCKET_STREAM":
+                try:
+                    if video_frame_queue.full(): # If you added the queue throttling logic
+                        try:
+                            discarded_frame_data_url = video_frame_queue.get_nowait()
+                            video_frame_queue.task_done() 
+                            logger.info(f"video_frame_queue was full. Discarded oldest frame.") # <--- CHANGE logger.debug TO logger.info
+                        except asyncio.QueueEmpty:
+                            pass 
+
+                    await video_frame_queue.put(data)
+                    logger.info(f"Frame PUT onto video_frame_queue. Queue size: {video_frame_queue.qsize()}") # <--- ADD THIS
+                except Exception as e_queue_put:
+                    logger.error(f"Error PUTTING frame onto queue from {websocket.client}: {e_queue_put}")
+            else:
+                logger.info(f"Received frame from {websocket.client}, but VIDEO_SOURCE_TYPE is not WEBSOCKET_STREAM. Frame ignored.")
+
+
+    except WebSocketDisconnect:
+        logger.info(f"Client disconnected from /ws/video_stream_upload: {websocket.client}")
+    except Exception as e:
+        logger.error(f"Error in /ws/video_stream_upload for {websocket.client}: {e}")
+        logger.error(traceback.format_exc())
+    finally:
+        logger.info(f"Closing WebSocket connection for /ws/video_stream_upload: {websocket.client}")
+        # No need to call manager.disconnect here as this is a separate purpose WebSocket
+
 class TokenRegistration(BaseModel): 
+    # (Existing FCM token registration model - unchanged)
     token: str
     platform: str = "android"
 
 @app.post("/api/register_fcm_token")
 async def register_fcm_token_api(payload: TokenRegistration, db: Session = Depends(SessionLocal)): 
+    # (Existing FCM token registration API - unchanged)
     logger.info(f"Attempting to register FCM token: {payload.token[:20]}...") 
     if not payload.token:
         raise HTTPException(status_code=400, detail="FCM token not provided")
@@ -706,5 +834,9 @@ async def register_fcm_token_api(payload: TokenRegistration, db: Session = Depen
 
 if __name__ == "__main__":
     logger.info("Starting Uvicorn server for local development...")
+    # Set VIDEO_SOURCE_TYPE for local testing if desired
+    # os.environ["VIDEO_SOURCE_TYPE"] = "WEBSOCKET_STREAM" 
+    # os.environ["VIDEO_SOURCE_TYPE"] = "FILE"
+    # os.environ["VIDEO_SOURCE"] = "your_video_file.mp4" 
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
