@@ -57,6 +57,16 @@ if FIREBASE_CRED_PATH:
     if os.path.exists(FIREBASE_CRED_PATH):
         try:
             logger.info(f"Attempting to read Firebase cred file at: {FIREBASE_CRED_PATH}")
+            # ---- Add these lines for debugging Firebase JSON ----
+            try:
+                with open(FIREBASE_CRED_PATH, 'r', encoding='utf-8') as f:
+                    content_sample = f.read(200) # Read first 200 chars
+                    logger.info(f"First 200 chars of Firebase cred file (raw, repr): {repr(content_sample)}")
+                    logger.info(f"First 200 chars of Firebase cred file (decoded): {content_sample}")
+            except Exception as e_read:
+                logger.error(f"Error reading Firebase cred file for debugging: {e_read}")
+            # ---- End of debug block ----
+
             if not firebase_admin._apps:
                 cred = credentials.Certificate(FIREBASE_CRED_PATH)
                 firebase_initialize_app(cred)
@@ -68,7 +78,7 @@ if FIREBASE_CRED_PATH:
         except Exception as e:
             logger.error(f"Error initializing Firebase Admin SDK: {e}")
             logger.error("Full traceback for Firebase initialization error:")
-            logger.error(traceback.format_exc())
+            logger.error(traceback.format_exc()) # This will print the full stack trace
     else:
         logger.warning(f"Firebase credentials file not found at path: {FIREBASE_CRED_PATH}. FCM notifications will be disabled.")
 else:
@@ -88,7 +98,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Pydantic Models (still defined, but save_spots_config_api will use dict for input) ---
+# --- Pydantic Models for API Spot Configuration (Robust approach) ---
 class SpotConfigIn(BaseModel):
     id: str 
     x: int
@@ -531,45 +541,11 @@ async def get_spots_config_api():
     return {"spots": spots_with_status}
 
 @app.post("/api/spots")
-async def save_spots_config_api(config: dict = Body(...), db: Session = Depends(SessionLocal)): # Reverted to dict = Body(...)
+async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depends(SessionLocal)): 
+    # Using Pydantic model 'SpotsUpdateRequest' for robust validation
     global previous_spot_states_global 
-    logger.info(f"POST /api/spots received raw data: {config}")
-
-    spots_data = config.get("spots")
-    if not isinstance(spots_data, list):
-        logger.error(f"Invalid payload: 'spots' key missing or not a list. Received: {config}")
-        raise HTTPException(status_code=400, detail="Request body must be a JSON object with a 'spots' key containing a list of spot objects.")
-
-    processed_spot_configs: List[Dict[str, Any]] = []
-    for i, spot_info_raw in enumerate(spots_data):
-        if not isinstance(spot_info_raw, dict):
-            raise HTTPException(status_code=400, detail=f"Item at index {i} in 'spots' list is not a valid object.")
-        
-        spot_id_val = spot_info_raw.get("id")
-        x_val = spot_info_raw.get("x")
-        y_val = spot_info_raw.get("y")
-        w_val = spot_info_raw.get("w")
-        h_val = spot_info_raw.get("h")
-
-        if spot_id_val is None: # Ensure ID is present
-             raise HTTPException(status_code=400, detail=f"Spot at index {i} is missing 'id' field.")
-        label = str(spot_id_val) # Convert ID to string label
-
-        # Validate coordinate types
-        if not (isinstance(x_val, int) and isinstance(y_val, int) and \
-                isinstance(w_val, int) and isinstance(h_val, int)):
-            err_msg = f"Spot '{label}' (index {i}) has one or more invalid coordinate/dimension types. Expected integers. Received: x({type(x_val)}), y({type(y_val)}), w({type(w_val)}), h({type(h_val)})"
-            logger.error(err_msg)
-            raise HTTPException(status_code=400, detail=err_msg)
-        
-        # Validate coordinate and dimension values (e.g., non-negative width/height)
-        if w_val <= 0 or h_val <= 0:
-            err_msg = f"Spot '{label}' (index {i}) has non-positive width or height. w({w_val}), h({h_val})"
-            logger.error(err_msg)
-            raise HTTPException(status_code=400, detail=err_msg)
-            
-        processed_spot_configs.append({"id": label, "x": x_val, "y": y_val, "w": w_val, "h": h_val})
-
+    logger.info(f"POST /api/spots received data (validated by Pydantic): {payload.dict()}") 
+    
     try:
         default_camera_id = "default_camera" 
         
@@ -577,23 +553,24 @@ async def save_spots_config_api(config: dict = Body(...), db: Session = Depends(
         existing_spot_configs_db = db.exec(statement_existing).all()
         
         existing_spots_map = {config.spot_label: config for config in existing_spot_configs_db}
-        incoming_spot_labels = {spot_conf["id"] for spot_conf in processed_spot_configs}
+        incoming_spot_labels = {spot.id for spot in payload.spots} # spot.id is from SpotConfigIn
 
-        for spot_conf in processed_spot_configs:
-            label = spot_conf["id"]
+        for spot_in in payload.spots: # spot_in is now a validated SpotConfigIn object
+            label = spot_in.id 
+            
             if label in existing_spots_map: 
                 config_to_update = existing_spots_map[label]
-                config_to_update.x_coord = spot_conf["x"]
-                config_to_update.y_coord = spot_conf["y"]
-                config_to_update.width = spot_conf["w"]
-                config_to_update.height = spot_conf["h"]
+                config_to_update.x_coord = spot_in.x
+                config_to_update.y_coord = spot_in.y
+                config_to_update.width = spot_in.w
+                config_to_update.height = spot_in.h
                 db.add(config_to_update)
                 logger.info(f"Updating spot: {label}")
             else: 
                 new_config = ParkingSpotConfig(
                     spot_label=label, camera_id=default_camera_id,
-                    x_coord=spot_conf["x"], y_coord=spot_conf["y"], 
-                    width=spot_conf["w"], height=spot_conf["h"]
+                    x_coord=spot_in.x, y_coord=spot_in.y, 
+                    width=spot_in.w, height=spot_in.h
                 )
                 db.add(new_config)
                 logger.info(f"Adding new spot: {label}")
@@ -632,10 +609,9 @@ async def save_spots_config_api(config: dict = Body(...), db: Session = Depends(
         
         return {"message": "Spot configuration saved successfully", "spots": current_spots_for_event}
 
-    except HTTPException: 
-        db.rollback() # Ensure rollback on handled HTTPExceptions from manual checks
+    except HTTPException: # Re-raise FastAPI's own HTTPExceptions (like 422 from Pydantic)
         raise
-    except Exception as e:
+    except Exception as e: # Catch other unexpected errors
         db.rollback()
         logger.error(f"Error saving spot configuration: {e}")
         logger.error(traceback.format_exc())
