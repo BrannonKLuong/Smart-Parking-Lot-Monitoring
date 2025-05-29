@@ -23,4 +23,4 @@ COPY yolov8n.pt /app/yolov8n.pt
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "warning", "--proxy-headers", "--forwarded-allow-ips", "*", "--ws", "websockets", "--root-path", "${APP_ROOT_PATH:-}"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--proxy-headers", "--forwarded-allow-ips", "*", "--ws", "websockets", "--root-path", "${APP_ROOT_PATH:-}"]

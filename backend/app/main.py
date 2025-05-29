@@ -4,7 +4,7 @@ import cv2
 import asyncio
 import time
 import traceback
-from fastapi import FastAPI, WebSocket, HTTPException, Depends, Request, Body, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, HTTPException, Depends, Request, Body, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse 
 from fastapi.staticfiles import StaticFiles 
@@ -13,7 +13,7 @@ import json
 import logging
 from datetime import datetime, timedelta 
 from pathlib import Path 
-from pydantic import BaseModel, Field as PydanticField 
+from pydantic import BaseModel, ValidationError
 import base64 # Added for decoding base64 frames
 import numpy as np # Added for OpenCV frame conversion
 
@@ -637,69 +637,92 @@ async def get_spots_config_api():
     return {"spots": spots_with_status}
 
 @app.post("/api/spots")
-async def save_spots_config_api(payload: SpotsUpdateRequest, db: Session = Depends(SessionLocal)): 
-    # (Existing API spots POST logic - unchanged)
-    global previous_spot_states_global 
-    logger.info("--- save_spots_config_api V3 EXECUTING (Pydantic version) ---")
-    global previous_spot_states_global 
-    logger.info(f"POST /api/spots received data (validated by Pydantic): {payload.dict()}") 
+async def save_spots_config_api(request: Request, db: Session = Depends(SessionLocal)): # Signature uses raw Request
+    logger.info("--- save_spots_config_api NO_PYDANTIC_VALIDATION_IN_SIGNATURE VERSION EXECUTING ---") # <--- NEW UNIQUE LOG
     try:
-        default_camera_id = "default_camera" 
+        raw_data = await request.json() # Manually parse JSON from the request body
+        logger.info(f"Received raw JSON data (no Pydantic in signature): {raw_data}")
+
+        # Manually access data assuming structure like {"spots": [{"id": ..., "x": ..., ...}]}
+        # You would add your own checks here if needed, or attempt Pydantic validation manually later
+        spots_data = raw_data.get("spots")
+        if not isinstance(spots_data, list):
+            logger.error("Payload is missing 'spots' list or 'spots' is not a list.")
+            raise HTTPException(status_code=400, detail="Payload must contain a 'spots' list.")
+
+        # --- Your original database saving logic, now using 'spot_in' directly from 'spots_data' ---
+        default_camera_id = "default_camera"
         statement_existing = select(ParkingSpotConfig).where(ParkingSpotConfig.camera_id == default_camera_id)
         existing_spot_configs_db = db.exec(statement_existing).all()
         existing_spots_map = {config.spot_label: config for config in existing_spot_configs_db}
-        incoming_spot_labels = {spot.id for spot in payload.spots} 
-        for spot_in in payload.spots: 
-            label = spot_in.id 
-            if label in existing_spots_map: 
+        
+        incoming_spot_labels = set()
+        for spot_in_dict in spots_data: # Iterate through the list of dicts
+            # Basic check for required keys, you can make this more robust
+            if not all(k in spot_in_dict for k in ["id", "x", "y", "w", "h"]):
+                logger.error(f"Spot data item is missing required keys: {spot_in_dict}")
+                raise HTTPException(status_code=400, detail=f"Spot data item missing required keys: {spot_in_dict}")
+            
+            label = str(spot_in_dict["id"]) # Ensure ID is treated as string for label
+            incoming_spot_labels.add(label)
+
+            if label in existing_spots_map:
                 config_to_update = existing_spots_map[label]
-                config_to_update.x_coord = spot_in.x
-                config_to_update.y_coord = spot_in.y
-                config_to_update.width = spot_in.w
-                config_to_update.height = spot_in.h
+                config_to_update.x_coord = int(spot_in_dict["x"]) # Ensure int
+                config_to_update.y_coord = int(spot_in_dict["y"]) # Ensure int
+                config_to_update.width = int(spot_in_dict["w"])  # Ensure int
+                config_to_update.height = int(spot_in_dict["h"]) # Ensure int
                 db.add(config_to_update)
                 logger.info(f"Updating spot: {label}")
-            else: 
+            else:
                 new_config = ParkingSpotConfig(
                     spot_label=label, camera_id=default_camera_id,
-                    x_coord=spot_in.x, y_coord=spot_in.y, 
-                    width=spot_in.w, height=spot_in.h
+                    x_coord=int(spot_in_dict["x"]), y_coord=int(spot_in_dict["y"]),
+                    width=int(spot_in_dict["w"]), height=int(spot_in_dict["h"])
                 )
                 db.add(new_config)
                 logger.info(f"Adding new spot: {label}")
+
         for existing_label_in_db, config_to_delete in existing_spots_map.items():
             if existing_label_in_db not in incoming_spot_labels:
                 logger.info(f"Deleting spot from DB: {existing_label_in_db}")
                 db.delete(config_to_delete)
+
         db.commit()
-        logger.info("Spot configuration saved successfully to database.")
-        spot_logic.refresh_spots() 
+        logger.info("Spot configuration saved successfully to database (No Pydantic in signature version).")
+        
+        spot_logic.refresh_spots() # Ensure spot_logic is imported
+        global previous_spot_states_global # Ensure this global is handled if you modify it here
         current_db_spot_labels = set(spot_logic.SPOTS.keys())
         for label_in_global_state in list(previous_spot_states_global.keys()):
             if label_in_global_state not in current_db_spot_labels:
-                logger.info(f"Removing spot {label_in_global_state} from previous_spot_states_global.")
                 previous_spot_states_global.pop(label_in_global_state, None)
         for label_from_db in current_db_spot_labels:
             if label_from_db not in previous_spot_states_global:
-                 logger.info(f"Adding new spot {label_from_db} to previous_spot_states_global as free.")
-                 previous_spot_states_global[label_from_db] = False 
-        logger.info(f"Global previous_spot_states_global updated after config change. Current states: {previous_spot_states_global}")
+                 previous_spot_states_global[label_from_db] = False
+
         current_spots_for_event = []
-        for spot_label, spot_coords_event in spot_logic.SPOTS.items():
+        for spot_label_data, spot_coords_event in spot_logic.SPOTS.items():
             if isinstance(spot_coords_event, tuple) and len(spot_coords_event) == 4:
                  current_spots_for_event.append({
-                     "id": spot_label, "x": spot_coords_event[0], "y": spot_coords_event[1],
+                     "id": spot_label_data, "x": spot_coords_event[0], "y": spot_coords_event[1],
                      "w": spot_coords_event[2], "h": spot_coords_event[3]
                  })
-        enqueue_event({"type": "spots_config_updated", "data": {"spots": current_spots_for_event}}) 
-        return {"message": "Spot configuration saved successfully", "spots": current_spots_for_event}
-    except HTTPException: 
+        enqueue_event({"type": "spots_config_updated", "data": {"spots": current_spots_for_event}}) # Ensure enqueue_event is defined
+
+        return {"message": "Spot configuration saved successfully (No Pydantic in signature version)", "spots": current_spots_for_event}
+
+    except json.JSONDecodeError:
+        logger.error("Invalid JSON received in request body (No Pydantic in signature version).")
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+    except HTTPException: # Re-raise HTTPExceptions if they occur in your logic
         raise
-    except Exception as e: 
+    except Exception as e:
         db.rollback()
-        logger.error(f"Error saving spot configuration: {e}")
+        logger.error(f"Error saving spot configuration (No Pydantic in signature version): {e}")
         logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error (No Pydantic in signature version): {str(e)}")
+
 
 @app.get("/webcam_feed")
 async def mjpeg_webcam_feed(): 
