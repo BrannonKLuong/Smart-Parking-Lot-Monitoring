@@ -1,4 +1,4 @@
-// Path: ui/src/App.js (V11.18 - with restored notification logic)
+// Path: ui/src/App.js (V11.18 - with restored notification logic & persistent WebcamStreamer)
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import Header from './Header';
 import Notifications from './Notifications';
@@ -27,7 +27,7 @@ export default function App() {
   const [notes, setNotes] = useState([]); // Stores notification objects { id, spot_id, timestamp }
   const [muted, setMuted] = useState(false);
   const [filterSpot, setFilterSpot] = useState(null);
-  const [streamSource, setStreamSource] = useState('processed');
+  const [streamSource, setStreamSource] = useState('processed'); // 'processed' or 'webcam'
   const [processedFeedKey, setProcessedFeedKey] = useState(Date.now());
   
   const prevStatusesRef = useRef({}); // Stores the previous statuses object
@@ -47,7 +47,6 @@ export default function App() {
     fetch(API_SPOTS_GET_ROUTE) 
       .then(r => {
         if (!r.ok) {
-          // Improved error logging for fetch
           const errorDetail = `HTTP error ${r.status} (${r.statusText}) while fetching spots from ${API_SPOTS_GET_ROUTE}`;
           console.error(errorDetail, r);
           throw new Error(errorDetail);
@@ -56,9 +55,7 @@ export default function App() {
       })
       .then(data => {
         if (data && data.spots) {
-          const newApiSpots = data.spots; // raw spots from API: {id, x, y, w, h, is_available}
-          
-          // Prepare new spots configuration and new statuses
+          const newApiSpots = data.spots; 
           const newSpotConfigs = [];
           const newStatuses = {};
           newApiSpots.forEach(spot => {
@@ -66,37 +63,29 @@ export default function App() {
             newSpotConfigs.push({
                 id: spotIdStr, 
                 x: spot.x, y: spot.y, w: spot.w, h: spot.h,
-                // is_available is directly from backend, already reflects live status
             });
-            newStatuses[spotIdStr] = !spot.is_available; // is_available: true means free (not occupied)
+            newStatuses[spotIdStr] = !spot.is_available; 
           });
 
-          // Update times and generate notifications (this logic is from your Codebase 1 App.js)
           setTimes(prevTimes => {
             const updatedTimes = { ...prevTimes };
             const newNotes = [];
-
             newSpotConfigs.forEach(spotConfig => {
               const spotIdStr = spotConfig.id;
-              const isNowOccupied = newStatuses[spotIdStr]; // Current occupancy
-              const wasPreviouslyOccupied = prevStatusesRef.current[spotIdStr]; // Previous occupancy
+              const isNowOccupied = newStatuses[spotIdStr]; 
+              const wasPreviouslyOccupied = prevStatusesRef.current[spotIdStr]; 
 
-              if (wasPreviouslyOccupied === true && isNowOccupied === false) { // Spot became free
+              if (wasPreviouslyOccupied === true && isNowOccupied === false) { 
                 const nowTimestamp = new Date().toISOString();
-                updatedTimes[spotIdStr] = nowTimestamp; // Set freeSince timestamp
+                updatedTimes[spotIdStr] = nowTimestamp; 
                 if (!muted) {
                   const notificationId = `${spotIdStr}-${nowTimestamp}-${Math.random()}`;
                   newNotes.push({ id: notificationId, spot_id: spotIdStr, timestamp: nowTimestamp });
                 }
-              } else if (isNowOccupied === true) { // Spot is occupied or became occupied
-                delete updatedTimes[spotIdStr]; // Remove freeSince timestamp
+              } else if (isNowOccupied === true) { 
+                delete updatedTimes[spotIdStr]; 
               } else if (wasPreviouslyOccupied === false && isNowOccupied === false && !updatedTimes[spotIdStr]) {
-                // Spot was free, is still free, but lost its timestamp (e.g. initial load)
-                // Try to set a timestamp; if not available, SpotTile handles it.
-                // This might happen if the spot was free before the app loaded.
-                // For an already free spot, we might not have an exact 'became free' time from polling.
-                // We could try to use a timestamp from the backend if available, or default.
-                 updatedTimes[spotIdStr] = new Date().toISOString(); // Default to now if no better data
+                 updatedTimes[spotIdStr] = new Date().toISOString(); 
               }
             });
 
@@ -108,31 +97,24 @@ export default function App() {
 
           setSpots(newSpotConfigs); 
           setStatuses(newStatuses);
-          
-          // Update prevStatusesRef *after* all processing for this fetch is done
           prevStatusesRef.current = { ...newStatuses };
-
         } else { 
             console.error("Fetched spots data malformed (is_available missing or spots array not found):", data); 
         }
       })
       .catch(error => { 
-          // Error logging already improved in the first .then block
-          // You might want to set an error state here to display to the user
           console.error("Failed to fetch spots (network or parsing error):", error); 
       });
-  }, [muted]); // Only muted is a direct dependency for notification generation
+  }, [muted]); 
 
-  // Initial fetch and polling
   useEffect(() => {
     if (!editMode) {
-      fetchSpots(); // Initial fetch
+      fetchSpots(); 
       const intervalId = setInterval(fetchSpots, POLLING_INTERVAL);
-      return () => clearInterval(intervalId); // Cleanup interval on unmount or when editMode changes
+      return () => clearInterval(intervalId); 
     }
-  }, [editMode, fetchSpots]); // fetchSpots is memoized
+  }, [editMode, fetchSpots]); 
 
-  // Notification timeout handling
   useEffect(() => {
     if (notes.length === 0) return;
     const timers = notes.map(note => {
@@ -146,10 +128,8 @@ export default function App() {
     };
   }, [notes]);
 
-  // Save spots handler (uses V11.18 logic, checks exact backend message)
   const handleSave = useCallback((updatedSpotsFromEditor) => {
     console.log("[App.js] handleSave called with (raw from editor):", updatedSpotsFromEditor);
-    
     const spotsPayloadToSend = {
         spots: updatedSpotsFromEditor.map(s => ({
             id: String(s.id),
@@ -159,9 +139,7 @@ export default function App() {
             h: Math.round(s.h)
         }))
     };
-
     console.log("[App.js] handleSave - Sending FULL SPOTS PAYLOAD to /api/nuke_test_save:", spotsPayloadToSend);
-
     fetch(API_SPOTS_SAVE_ROUTE, { 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -180,7 +158,6 @@ export default function App() {
         return r.json();
       })
       .then(data => {
-        // This check now relies on the backend sending "Spots saved to DB successfully!"
         if (data.message && data.message.includes("Spots saved to DB successfully!")) { 
           console.log('Spots save successful (matched backend message):', data);
           setEditMode(false);
@@ -210,7 +187,6 @@ export default function App() {
     ? notes.filter(n => String(n.spot_id) === String(filterSpot)) 
     : notes;
   const totalSpotsCount = spots.length;
-  // statuses has { spotId: isOccupied }, so freeSpotsCount is where isOccupied is false
   const freeSpotsCount = Object.values(statuses).filter(isOccupied => !isOccupied).length;
 
   return (
@@ -221,6 +197,7 @@ export default function App() {
           <button onClick={() => setEditMode(e => !e)} className="px-6 py-3 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75 transition duration-150 ease-in-out">
             {editMode ? 'Cancel Spot Editing' : 'Edit Parking Spots'}
           </button>
+          {/* Stream Source Buttons (only shown if not in editMode) */}
           {!editMode && ( 
             <div className="flex space-x-2"> 
               <button 
@@ -230,7 +207,13 @@ export default function App() {
                 Processed Feed (File/Other) 
               </button> 
               <button 
-                onClick={() => { setStreamSource('webcam'); setProcessedFeedKey(Date.now()); }} 
+                onClick={() => { 
+                  setStreamSource('webcam'); 
+                  // If switching to webcam, ensure WebcamStreamer has a chance to connect and start
+                  // before SpotsEditor might immediately try to use its feed.
+                  // Refreshing processedFeedKey here is good for the main view if it's already 'webcam'.
+                  setProcessedFeedKey(Date.now()); 
+                }} 
                 className={`px-4 py-3 rounded-lg font-semibold shadow-md transition duration-150 ease-in-out ${streamSource === 'webcam' ? 'bg-teal-600 text-white hover:bg-teal-700 focus:ring-teal-500' : 'bg-gray-300 dark:bg-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-400 dark:hover:bg-gray-600 focus:ring-gray-400'} focus:outline-none focus:ring-2 focus:ring-opacity-75`}
               > 
                 Use My Webcam (Live Processed) 
@@ -239,76 +222,88 @@ export default function App() {
           )}
         </div>
 
+        {/* WebcamStreamer: Render if in 'webcam' mode. It stays mounted but its UI can be hidden. */}
+        {streamSource === 'webcam' && webcamWebSocketUrl && (
+          <div className={editMode ? "hidden" : "block mb-6"}> {/* Visually hide WebcamStreamer's UI when editing spots */}
+            <p className="text-sm text-gray-600 dark:text-gray-400 text-center mb-2">
+                  Webcam streaming controls. Ensure backend `VIDEO_SOURCE_TYPE` is `WEBSOCKET_STREAM`.
+            </p>
+            <WebcamStreamer
+              webSocketUrl={webcamWebSocketUrl}
+              onStreamingActive={handleWebcamStreamingActive}
+            />
+          </div>
+        )}
+        {/* Error message for webcam WebSocket URL if not editing */}
+        {streamSource === 'webcam' && !webcamWebSocketUrl && !editMode && ( 
+          <div className="flex justify-center mb-8">
+            <div className="p-4 bg-red-100 text-red-700 rounded-lg shadow">Error: Could not derive WebSocket URL. API_BASE_URL might be misconfigured.</div>
+          </div>
+        )}
+
+        {/* Main content area: SpotsEditor or Spot Display */}
         {editMode ? ( 
           <SpotsEditor 
             initialSpots={spots} 
             videoSize={{ width: 800, height: 600 }} 
             onSave={handleSave} 
-            setSpots={setSpots} /* This allows SpotsEditor to directly update spots for undo, if needed */
-            apiBaseUrl={API_BASE_URL} 
+            setSpots={setSpots} 
+            apiBaseUrl={API_BASE_URL} // SpotsEditor uses this for its /webcam_feed
           /> 
         ) : ( 
-        <> 
-          <Notifications 
-            notes={visibleNotes} 
-            onFilter={setFilterSpot} 
-            muted={muted} 
-            toggleMute={() => setMuted(m => !m)}
-          /> 
-          <main className="p-4"> 
-            {streamSource === 'processed' && ( 
-              <div className="flex flex-col items-center mb-8"> 
-                <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
-                  Processed feed (e.g., backend `VIDEO_SOURCE_TYPE` might be "FILE").
-                </p> 
-                <img 
-                  key={processedFeedKey} 
-                  src={PROCESSED_VIDEO_URL} 
-                  alt="Parking feed (processed by backend)" 
-                  className="w-full max-w-2xl rounded-lg shadow-lg border-2 border-gray-300 dark:border-gray-700" 
-                  onError={(e) => { e.target.alt = "Feed unavailable. Check backend."; e.target.src="https://placehold.co/640x480/2d3748/cbd5e0?text=Feed+Unavailable"; }}
-                /> 
-              </div> 
-            )} 
-            {streamSource === 'webcam' && webcamWebSocketUrl && ( 
-              <div className="flex flex-col items-center mb-8 space-y-6"> 
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  Ensure backend `VIDEO_SOURCE_TYPE` is set to `WEBSOCKET_STREAM`.
-                </p> 
-                <WebcamStreamer 
-                  webSocketUrl={webcamWebSocketUrl} 
-                  onStreamingActive={handleWebcamStreamingActive}
-                /> 
-                <div className="w-full max-w-2xl"> 
+          // Display area when NOT in editMode
+          <> 
+            <Notifications 
+              notes={visibleNotes} 
+              onFilter={setFilterSpot} 
+              muted={muted} 
+              toggleMute={() => setMuted(m => !m)}
+            /> 
+            <main className="p-4"> 
+              {/* Video Display Area when NOT editing */}
+              {streamSource === 'processed' && ( 
+                <div className="flex flex-col items-center mb-8"> 
+                  <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">
+                    Processed feed (e.g., backend `VIDEO_SOURCE_TYPE` might be "FILE").
+                  </p> 
+                  <img 
+                    key={processedFeedKey} 
+                    src={PROCESSED_VIDEO_URL} 
+                    alt="Parking feed (processed by backend)" 
+                    className="w-full max-w-2xl rounded-lg shadow-lg border-2 border-gray-300 dark:border-gray-700" 
+                    onError={(e) => { e.target.alt = "Feed unavailable. Check backend."; e.target.src="https://placehold.co/640x480/2d3748/cbd5e0?text=Feed+Unavailable"; }}
+                  /> 
+                </div> 
+              )} 
+              {/* Display for processed webcam feed when not editing and in webcam mode */}
+              {/* This img tag is for viewing the feed when not editing. SpotsEditor has its own. */}
+              {streamSource === 'webcam' && webcamWebSocketUrl && (
+                <div className="flex flex-col items-center mb-8">
                   <h3 className="text-lg font-semibold mb-2 text-center text-gray-700 dark:text-gray-300">Processed Webcam Feed</h3> 
                   <img 
                     key={processedFeedKey} 
                     src={PROCESSED_VIDEO_URL} 
                     alt="Parking feed (processed from your webcam by backend)" 
-                    className="w-full rounded-lg shadow-lg border-2 border-gray-300 dark:border-gray-700" 
+                    className="w-full max-w-2xl rounded-lg shadow-lg border-2 border-gray-300 dark:border-gray-700" 
                     onError={(e) => { e.target.alt = "Processed webcam feed unavailable. Ensure streaming and backend processing."; e.target.src="https://placehold.co/640x480/2d3748/cbd5e0?text=Processed+Feed+Unavailable"; }}
                   /> 
-                </div> 
+                </div>
+              )}
+              
+              {/* Spot Tiles Display Area */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"> 
+                {spots.map(spot => ( 
+                  <SpotTile 
+                    key={spot.id} 
+                    id={spot.id} 
+                    isFree={!statuses[spot.id]} 
+                    freeSince={times[spot.id]}  
+                    highlight={String(filterSpot) === String(spot.id)}
+                  /> 
+                ))} 
               </div> 
-            )} 
-            {streamSource === 'webcam' && !webcamWebSocketUrl && ( 
-              <div className="flex justify-center mb-8">
-                <div className="p-4 bg-red-100 text-red-700 rounded-lg shadow">Error: Could not derive WebSocket URL. API_BASE_URL might be misconfigured.</div>
-              </div>
-            )} 
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6"> 
-              {spots.map(spot => ( 
-                <SpotTile 
-                  key={spot.id} 
-                  id={spot.id} 
-                  isFree={!statuses[spot.id]} // Pass current occupancy status
-                  freeSince={times[spot.id]}  // Pass freeSince timestamp
-                  highlight={String(filterSpot) === String(spot.id)}
-                /> 
-              ))} 
-            </div> 
-          </main> 
-        </> 
+            </main> 
+          </> 
         )}
       </div>
     </div>
