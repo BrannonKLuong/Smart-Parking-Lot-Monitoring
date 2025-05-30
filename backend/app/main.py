@@ -53,7 +53,7 @@ if not DATABASE_URL:
 
 FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED")
 FCM_VACANCY_DELAY_SECONDS = int(os.getenv("FCM_VACANCY_DELAY_SECONDS", "5"))
-VIDEO_PROCESSING_FPS = int(os.getenv("VIDEO_PROCESSING_FPS", "2")) # Target FPS for processing
+VIDEO_PROCESSING_FPS = int(os.getenv("VIDEO_PROCESSING_FPS", "15")) # Target FPS for processing
 VIDEO_SOURCE_TYPE_ENV = os.getenv("VIDEO_SOURCE_TYPE", "FILE").upper()
 VIDEO_SOURCE = os.getenv("VIDEO_SOURCE") # Value for FILE, KVS_STREAM, WEBCAM_INDEX etc.
 

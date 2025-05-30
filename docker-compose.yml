@@ -31,7 +31,7 @@ services:
       
       # --- Optional, but good to set based on your main.py defaults or for other modes ---
       VIDEO_SOURCE: /app/videos/test_video.mov # Used if VIDEO_SOURCE_TYPE=FILE
-      VIDEO_PROCESSING_FPS: "2" 
+      VIDEO_PROCESSING_FPS: "15" 
       FCM_VACANCY_DELAY_SECONDS: "5"
       # AWS_REGION: "your-aws-region" # If using KVS
       # MODEL_PATH: "/app/yolov8n.pt" # If cv_model.py uses this env var
