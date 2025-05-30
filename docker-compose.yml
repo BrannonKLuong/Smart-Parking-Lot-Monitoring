@@ -9,34 +9,32 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-
-  rtsp:
-    image: aler9/rtsp-simple-server
-    ports:
-      - "8554:8554"    
-    volumes:
-      - ./rtsp-simple-server.yml:/app/rtsp-simple-server.yml
-    command: ["/app/rtsp-simple-server", "/app/rtsp-simple-server.yml"]
+    healthcheck: # For PostgreSQL
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s 
 
   backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile
+      context: . # Build context is the project root
+      dockerfile: backend/Dockerfile # Path to the V11 Dockerfile
     depends_on:
-      - db
-      - rtsp
+      db: 
+        condition: service_healthy 
     environment:
-      # Change VIDEO_SOURCE to point to the new stream path defined in the RTSP config
-      # - VIDEO_SOURCE=rtsp://rtsp:8554/my_stream
-      VIDEO_SOURCE: /app/videos/test_video.mov
+      VIDEO_SOURCE_TYPE: "WEBSOCKET_STREAM" # For live webcam functionality later
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-      FIREBASE_CRED: /secrets/firebase-sa.json
-    volumes:
-      - ./backend:/app 
-      - ./secrets/firebase-sa.json:/secrets/firebase-sa.json:ro
-      - ./static:/static:ro # Mount static files for the frontend
+      # FIREBASE_CRED: /secrets/firebase-sa.json # Not needed for V11 main.py
+      PYTHONUNBUFFERED: 1 
+      LOG_LEVEL: "debug" 
+    # --- THE ./backend:/app VOLUME MOUNT REMAINS COMMENTED OUT ---
+    # volumes:
+    #   - ./backend:/app 
     ports:
       - "8000:8000" 
 
 volumes:
   pgdata:
+
