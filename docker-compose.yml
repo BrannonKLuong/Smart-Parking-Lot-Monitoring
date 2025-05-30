@@ -9,7 +9,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-    healthcheck: # For PostgreSQL
+    healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
       interval: 10s
       timeout: 5s
@@ -18,23 +18,33 @@ services:
 
   backend:
     build:
-      context: . # Build context is the project root
-      dockerfile: backend/Dockerfile # Path to the V11 Dockerfile
+      context: . 
+      dockerfile: backend/Dockerfile 
     depends_on:
       db: 
         condition: service_healthy 
     environment:
-      VIDEO_SOURCE_TYPE: "WEBSOCKET_STREAM" # For live webcam functionality later
+      # --- Critical for merged functionality ---
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-      # FIREBASE_CRED: /secrets/firebase-sa.json # Not needed for V11 main.py
-      PYTHONUNBUFFERED: 1 
-      LOG_LEVEL: "debug" 
-    # --- THE ./backend:/app VOLUME MOUNT REMAINS COMMENTED OUT ---
-    # volumes:
-    #   - ./backend:/app 
+      FIREBASE_CRED_PATH: /app/secrets/firebase-sa.json # Path inside the container
+      VIDEO_SOURCE_TYPE: "WEBSOCKET_STREAM" # Default for UI webcam streaming
+      
+      # --- Optional, but good to set based on your main.py defaults or for other modes ---
+      VIDEO_SOURCE: /app/videos/test_video.mov # Used if VIDEO_SOURCE_TYPE=FILE
+      VIDEO_PROCESSING_FPS: "2" 
+      FCM_VACANCY_DELAY_SECONDS: "5"
+      # AWS_REGION: "your-aws-region" # If using KVS
+      # MODEL_PATH: "/app/yolov8n.pt" # If cv_model.py uses this env var
+
+      # --- Standard good practices ---
+      PYTHONUNBUFFERED: "1" 
+      LOG_LEVEL: "debug" # As set in your docker-compose
+      # Ensure your main.py's logging.basicConfig also respects LOG_LEVEL if desired
+      
     ports:
-      - "8000:8000" 
+      - "8000:8000"
+    # volumes: # Keep commented for testing the image build, uncomment for dev if needed
+    #   - ./backend:/app # This would map your local backend to /app in container
 
 volumes:
   pgdata:
-
