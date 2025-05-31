@@ -1,4 +1,4 @@
-// Path: ui/src/App.js (Delay Initial Fetch for Camera Test)
+// Path: ui/src/App.js (Polling Re-enabled)
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import Header from './Header'; 
 import Notifications from './Notifications';
@@ -14,7 +14,7 @@ const API_SPOTS_SAVE_ROUTE = `${API_BASE_URL}/api/nuke_test_save`;
 const API_SPOTS_GET_ROUTE = `${API_BASE_URL}/api/spots_v10_get`; 
 
 const NOTIFICATION_DURATION = 10000;
-// const POLLING_INTERVAL = 5000; // Polling is currently disabled for testing camera prompt
+const POLLING_INTERVAL = 5000; // ms (Re-enabled)
 
 export default function App() {
   const [editMode, setEditMode] = useState(false);
@@ -110,19 +110,18 @@ export default function App() {
   }, [muted]); 
 
   useEffect(() => {
-    console.log("[App.js] Effect for initial fetchSpots. editMode:", editMode);
+    // console.log("[App.js] Effect for initial fetchSpots and Polling. editMode:", editMode);
     if (!editMode) {
-      // Delay the initial fetch slightly to let other things settle, especially WebcamStreamer
       const timerId = setTimeout(() => {
-        console.log("[App.js] Executing delayed initial fetchSpots.");
+        // console.log("[App.js] Executing delayed initial fetchSpots.");
         fetchSpots();
-      }, 1000); // Delay by 1 second, can adjust
+      }, 1000); 
 
-      // Polling is currently disabled for camera prompt debugging
-      // const intervalId = setInterval(fetchSpots, POLLING_INTERVAL); 
+      const intervalId = setInterval(fetchSpots, POLLING_INTERVAL); // Polling re-enabled
+      
       return () => {
         clearTimeout(timerId);
-        // clearInterval(intervalId); 
+        clearInterval(intervalId); // Cleanup polling interval
       };
     }
   }, [editMode, fetchSpots]); 
