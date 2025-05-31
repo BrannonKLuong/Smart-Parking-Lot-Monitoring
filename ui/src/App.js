@@ -38,7 +38,7 @@ export default function App() {
   }, []); 
 
   const webcamWebSocketUrl = getWebSocketUrl();
-
+  console.log("[App.js] Derived webcamWebSocketUrl:", webcamWebSocketUrl, "from API_BASE_URL:", API_BASE_URL);
   const fetchSpots = useCallback(() => {
     console.log(`[App.js ${new Date().toLocaleTimeString()}] Fetching spots... Current muted state: ${muted}`);
     fetch(API_SPOTS_GET_ROUTE) 
