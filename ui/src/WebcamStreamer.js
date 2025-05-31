@@ -1,11 +1,11 @@
+// Path: ui/src/WebcamStreamer.js (Enhanced Logging for Deployed Debugging)
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 
 // Configuration
-// const WEBSOCKET_URL = 'wss://your-app-runner-url/ws/video_stream_upload'; // Now passed as a prop
 const FRAME_RATE = 5; // Frames per second
 const IMAGE_QUALITY = 0.7; // JPEG quality (0.1 to 1.0)
 
-const WebcamStreamer = ({ webSocketUrl }) => { // webSocketUrl is now a prop
+const WebcamStreamer = ({ webSocketUrl, onStreamingActive }) => {
   const [isCameraActive, setIsCameraActive] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState(null);
@@ -16,120 +16,160 @@ const WebcamStreamer = ({ webSocketUrl }) => { // webSocketUrl is now a prop
   const streamRef = useRef(null);
   const streamIntervalRef = useRef(null);
 
+  useEffect(() => {
+    console.log("[WebcamStreamer] Component Mounted or Updated. Props: webSocketUrl:", webSocketUrl);
+    // Cleanup on unmount
+    return () => {
+        console.log("[WebcamStreamer] Component Unmounting. Cleaning up...");
+        // stopCamera(); // stopCamera is in dependency array of another useEffect, might be called there
+        // disconnectWebSocket(); // disconnectWebSocket is in dependency array of another useEffect
+    };
+  }, [webSocketUrl]);
+
+
   // Function to start the camera
   const startCamera = async () => {
+    console.log("[WebcamStreamer] Attempting to start camera...");
     setError(null);
     try {
       if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        console.log("[WebcamStreamer] navigator.mediaDevices.getUserMedia available.");
         const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 } });
+        console.log("[WebcamStreamer] getUserMedia stream obtained:", stream);
         streamRef.current = stream;
         if (videoRef.current) {
+          console.log("[WebcamStreamer] videoRef is available. Setting srcObject.");
           videoRef.current.srcObject = stream;
-          await videoRef.current.play(); 
+          await videoRef.current.play();
+          console.log("[WebcamStreamer] videoRef.current.play() successful.");
+        } else {
+            console.warn("[WebcamStreamer] videoRef.current is null when trying to set srcObject.");
         }
         setIsCameraActive(true);
-        console.log('Camera started');
+        // No onStreamingActive(true) here, only camera is active, not necessarily streaming yet.
+        console.log('[WebcamStreamer] Camera started successfully. isCameraActive: true');
       } else {
+        console.error('[WebcamStreamer] getUserMedia not supported in this browser.');
         throw new Error('getUserMedia not supported in this browser.');
       }
     } catch (err) {
-      console.error('Error starting camera:', err);
-      setError(`Error starting camera: ${err.message}. Please ensure you have a webcam and grant permission.`);
+      console.error('[WebcamStreamer] Error starting camera:', err.name, err.message, err);
+      setError(`Error starting camera: ${err.name} - ${err.message}. Check permissions and hardware.`);
       setIsCameraActive(false);
+      if (onStreamingActive) onStreamingActive(false); // Ensure App.js knows streaming stopped if camera failed
     }
   };
 
-  // Function to stop the camera
   const stopCamera = useCallback(() => {
-    if (streamIntervalRef.current) { // Stop sending frames if camera stops
+    console.log("[WebcamStreamer] Stopping camera...");
+    if (streamIntervalRef.current) {
         clearInterval(streamIntervalRef.current);
         streamIntervalRef.current = null;
+        console.log("[WebcamStreamer] Frame sending interval cleared due to stopCamera.");
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
+      console.log("[WebcamStreamer] Media stream tracks stopped.");
     }
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
     setIsCameraActive(false);
-    // Do not automatically disconnect WebSocket here, let user control streaming explicitly
-    // setIsStreaming(false); // User might want to stop camera but keep WS for a moment or vice-versa
-    console.log('Camera stopped');
-  }, []);
+    if (isStreaming) { // If it was streaming, it's not anymore without a camera.
+        setIsStreaming(false);
+        if (onStreamingActive) onStreamingActive(false);
+    }
+    console.log('[WebcamStreamer] Camera stopped. isCameraActive: false');
+  }, [isStreaming, onStreamingActive]);
 
-  // Function to connect to WebSocket
   const connectWebSocket = useCallback(() => {
+    console.log("[WebcamStreamer] Attempting to connect WebSocket. URL:", webSocketUrl);
     if (!webSocketUrl) {
-        setError("WebSocket URL is not provided to WebcamStreamer component.");
+        const msg = "WebSocket URL is not provided to WebcamStreamer component.";
+        console.error("[WebcamStreamer]", msg);
+        setError(msg);
         setWsStatus('Error: URL not configured');
-        console.error("WebSocket URL is missing in props.");
+        if (onStreamingActive) onStreamingActive(false);
         return;
     }
     if (webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
-      console.log('WebSocket already connected.');
+      console.log('[WebcamStreamer] WebSocket already connected.');
       setWsStatus('Connected');
-      // setIsStreaming(true); // Set isStreaming only after successful connection and user intent
+      // If already connected, ensure isStreaming is true if camera is also active
+      if (isCameraActive) {
+        setIsStreaming(true);
+        if (onStreamingActive) onStreamingActive(true);
+      }
       return;
     }
 
     webSocketRef.current = new WebSocket(webSocketUrl);
     setWsStatus('Connecting...');
+    console.log("[WebcamStreamer] WebSocket instance created. Status: Connecting...");
 
     webSocketRef.current.onopen = () => {
-      console.log('WebSocket connected to', webSocketUrl);
+      console.log('[WebcamStreamer] WebSocket connected to', webSocketUrl);
       setWsStatus('Connected');
-      setIsStreaming(true); // Now we are officially streaming
+      if (isCameraActive) { // Only start streaming if camera is also ready
+        setIsStreaming(true); 
+        if (onStreamingActive) onStreamingActive(true);
+      } else {
+        console.log("[WebcamStreamer] WebSocket opened, but camera is not active. Not setting isStreaming to true yet.");
+      }
     };
 
     webSocketRef.current.onclose = (event) => {
-      console.log('WebSocket disconnected:', event.reason, `Code: ${event.code}`);
+      console.log(`[WebcamStreamer] WebSocket disconnected: ${event.reason || 'Connection closed'}, Code: ${event.code}`);
       setWsStatus(`Disconnected: ${event.reason || 'Connection closed'}`);
       setIsStreaming(false);
-      if (streamIntervalRef.current) { // Ensure interval is cleared if WS closes
+      if (onStreamingActive) onStreamingActive(false);
+      if (streamIntervalRef.current) { 
         clearInterval(streamIntervalRef.current);
         streamIntervalRef.current = null;
+        console.log("[WebcamStreamer] Frame sending interval cleared due to WS close.");
       }
     };
 
     webSocketRef.current.onerror = (err) => {
-      console.error('WebSocket error:', err);
-      setError(`WebSocket error connecting to ${webSocketUrl}. Check console and backend.`);
+      console.error('[WebcamStreamer] WebSocket error:', err);
+      setError(`WebSocket error. Check console and backend. URL: ${webSocketUrl}`);
       setWsStatus('Error');
       setIsStreaming(false);
+      if (onStreamingActive) onStreamingActive(false);
     };
+  }, [webSocketUrl, isCameraActive, onStreamingActive]); // Added isCameraActive here
 
-    webSocketRef.current.onmessage = (event) => {
-      console.log('WebSocket message received:', event.data);
-    };
-  }, [webSocketUrl]);
-
-  // Function to disconnect WebSocket
   const disconnectWebSocket = useCallback(() => {
+    console.log("[WebcamStreamer] Disconnecting WebSocket...");
     if (streamIntervalRef.current) {
       clearInterval(streamIntervalRef.current);
       streamIntervalRef.current = null;
+      console.log("[WebcamStreamer] Frame sending interval cleared due to disconnectWebSocket call.");
     }
     if (webSocketRef.current) {
       webSocketRef.current.close();
-      // webSocketRef.current = null; // onclose will handle state updates
+      console.log("[WebcamStreamer] WebSocket.close() called.");
     }
-    // setIsStreaming(false); // onclose will set this
-    // setWsStatus('Disconnected'); // onclose will set this
-    console.log('WebSocket disconnected by user.');
+    // States (isStreaming, wsStatus) will be updated by onclose handler
   }, []);
 
-
-  // Function to capture a frame and send it
   const captureAndSendFrame = useCallback(() => {
     if (!videoRef.current || !canvasRef.current || !webSocketRef.current || webSocketRef.current.readyState !== WebSocket.OPEN || !isCameraActive) {
+      // console.debug("[WebcamStreamer] captureAndSendFrame: Preconditions not met or WebSocket not open.");
+      if (webSocketRef.current && webSocketRef.current.readyState !== WebSocket.OPEN) {
+          // If WS is not open, stop trying to send.
+          setIsStreaming(false);
+          if(onStreamingActive) onStreamingActive(false);
+      }
       return;
     }
 
     const video = videoRef.current;
     const canvas = canvasRef.current;
 
-    if (video.videoWidth === 0 || video.videoHeight === 0) {
+    if (video.videoWidth === 0 || video.videoHeight === 0 || video.paused || video.ended) {
+        // console.debug("[WebcamStreamer] captureAndSendFrame: Video not ready or ended.");
         return;
     }
 
@@ -138,72 +178,84 @@ const WebcamStreamer = ({ webSocketUrl }) => { // webSocketUrl is now a prop
     const context = canvas.getContext('2d');
     context.drawImage(video, 0, 0, canvas.width, canvas.height);
     const frameDataUrl = canvas.toDataURL('image/jpeg', IMAGE_QUALITY);
-    webSocketRef.current.send(frameDataUrl);
+    
+    if (webSocketRef.current.bufferedAmount === 0) { // Check if buffer is clear
+        webSocketRef.current.send(frameDataUrl);
+    } else {
+        console.log("[WebcamStreamer] WebSocket buffer not empty, skipping frame. Buffered amount:", webSocketRef.current.bufferedAmount);
+    }
+  }, [isCameraActive, onStreamingActive]);
 
-  }, [isCameraActive]); // Added isCameraActive dependency
-
-
-  // Effect to start/stop streaming frames
   useEffect(() => {
+    console.log(`[WebcamStreamer] Effect for streaming interval. isStreaming: ${isStreaming}, isCameraActive: ${isCameraActive}, WS_ReadyState: ${webSocketRef.current?.readyState}`);
     if (isStreaming && isCameraActive && webSocketRef.current && webSocketRef.current.readyState === WebSocket.OPEN) {
       if (streamIntervalRef.current) {
         clearInterval(streamIntervalRef.current); 
       }
       streamIntervalRef.current = setInterval(captureAndSendFrame, 1000 / FRAME_RATE);
-      console.log(`Started streaming frames at ${FRAME_RATE} FPS`);
+      console.log(`[WebcamStreamer] Started streaming frames at ${FRAME_RATE} FPS`);
     } else {
       if (streamIntervalRef.current) {
         clearInterval(streamIntervalRef.current);
         streamIntervalRef.current = null;
-        console.log('Stopped streaming frames');
+        console.log('[WebcamStreamer] Stopped streaming frames (condition not met or interval cleared).');
       }
     }
-
     return () => {
       if (streamIntervalRef.current) {
         clearInterval(streamIntervalRef.current);
+        console.log("[WebcamStreamer] Cleaned up streaming interval from effect.");
       }
     };
   }, [isStreaming, isCameraActive, captureAndSendFrame]);
 
-
-  // Cleanup on component unmount
   useEffect(() => {
     return () => {
+      console.log("[WebcamStreamer] Component will unmount - calling stopCamera and disconnectWebSocket.");
       stopCamera();
       disconnectWebSocket();
     };
   }, [stopCamera, disconnectWebSocket]);
 
-
   const handleStartStreaming = async () => {
+    console.log("[WebcamStreamer] 'Start Streaming to Backend' button clicked.");
     setError(null);
     if (!isCameraActive) {
+      console.log("[WebcamStreamer] Camera not active, calling startCamera first.");
       await startCamera(); 
-      // It's important startCamera sets isCameraActive to true for the useEffect to pick up streaming.
-      // A small delay might still be needed if state updates are not immediate enough for connectWebSocket.
-      // However, connectWebSocket itself checks for camera readiness implicitly.
-      await new Promise(resolve => setTimeout(resolve, 100)); // Small delay for camera to be fully ready
+      // Check if startCamera was successful
+      if (!streamRef.current) { // streamRef is set by successful startCamera
+          const msg = "Camera failed to start. Cannot initiate streaming.";
+          console.error("[WebcamStreamer]", msg);
+          setError(msg);
+          return; 
+      }
+      // Give a moment for state to settle after camera starts
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
-     // Check if camera is active before connecting. startCamera updates isCameraActive.
-    if (streamRef.current) { // Check if stream is actually available
+     
+    // Proceed to connect WebSocket only if camera is now active
+    if (streamRef.current && isCameraActive) { 
+        console.log("[WebcamStreamer] Camera is active, proceeding to connect WebSocket.");
         connectWebSocket();
-    } else if (!error) { 
-        setError("Camera could not be started or is not yet ready. Cannot start streaming.");
-        console.log("Attempted to start streaming, but camera stream is not available.");
+    } else { 
+        const msg = "Camera is not active after attempt. Cannot start streaming.";
+        console.error("[WebcamStreamer]", msg);
+        if (!error) setError(msg); // Don't overwrite a more specific error from startCamera
     }
   };
 
   const handleStopStreaming = () => {
-    disconnectWebSocket(); // This will set isStreaming to false via onclose
-    // Optionally stop the camera as well
-    // stopCamera(); 
+    console.log("[WebcamStreamer] 'Stop Streaming' button clicked.");
+    disconnectWebSocket(); 
   };
-
 
   return (
     <div className="p-4 bg-gray-800 text-white rounded-lg shadow-xl w-full max-w-2xl mx-auto my-8 font-sans">
       <h3 className="text-xl font-semibold mb-4 text-center text-teal-400">Stream Your Webcam</h3>
+      <div className="mb-2 text-center text-xs">
+        (Console logs in DevTools will show detailed steps)
+      </div>
 
       <div className="mb-4 bg-black rounded-md overflow-hidden shadow-inner">
         <video ref={videoRef} muted autoPlay playsInline className="w-full h-auto aspect-video" />
