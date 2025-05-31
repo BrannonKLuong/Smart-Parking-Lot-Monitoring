@@ -128,8 +128,8 @@ export default function App() {
   useEffect(() => {
     if (!editMode) {
       fetchSpots(); 
-      const intervalId = setInterval(fetchSpots, POLLING_INTERVAL);
-      return () => clearInterval(intervalId); 
+      // const intervalId = setInterval(fetchSpots, POLLING_INTERVAL);
+      // return () => clearInterval(intervalId); 
     }
   }, [editMode, fetchSpots]); 
 
