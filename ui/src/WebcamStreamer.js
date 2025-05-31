@@ -217,15 +217,20 @@ const WebcamStreamer = ({ webSocketUrl, onStreamingActive }) => {
     setError(null);
     if (!isCameraActive) {
       console.log("[WebcamStreamer] Camera not active, calling startCamera first.");
-      await startCamera(); 
-      if (!streamRef.current) { 
-          const msg = "Camera failed to start. Cannot initiate streaming.";
+      // startCamera(); // This is if startCamera is not async and handles its own promise
+      await startCamera(); // If startCamera IS async (as in the ultra-detailed logging version)
+
+      // Check if startCamera actually succeeded
+      if (!streamRef.current && !isCameraActive) { // This check needs to be robust
+          const msg = "Camera failed to start or was not activated. Cannot initiate streaming.";
           console.error("[WebcamStreamer]", msg);
           setError(msg);
           return; 
       }
-      await new Promise(resolve => setTimeout(resolve, 100));
+      // Small delay might not be needed here if await startCamera() already ensures completion
+      // await new Promise(resolve => setTimeout(resolve, 100)); 
     }
+
     if (streamRef.current && isCameraActive) { 
         console.log("[WebcamStreamer] Camera is active, proceeding to connect WebSocket.");
         connectWebSocket();
@@ -234,7 +239,7 @@ const WebcamStreamer = ({ webSocketUrl, onStreamingActive }) => {
         console.error("[WebcamStreamer]", msg);
         if (!error) setError(msg); 
     }
-  };
+};
 
   const handleStopStreaming = () => {
     console.log("[WebcamStreamer] 'Stop Streaming' button clicked.");
