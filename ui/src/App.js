@@ -14,7 +14,7 @@ const API_SPOTS_SAVE_ROUTE = `${API_BASE_URL}/api/nuke_test_save`;
 const API_SPOTS_GET_ROUTE = `${API_BASE_URL}/api/spots_v10_get`; 
 
 const NOTIFICATION_DURATION = 10000;
-const POLLING_INTERVAL = 5000; // ms
+// const POLLING_INTERVAL = 5000; // ms
 
 export default function App() {
   const [editMode, setEditMode] = useState(false);
