@@ -226,8 +226,10 @@ export default function App() {
           {!editMode && ( 
             <button 
               onClick={() => { 
+                console.log("[App.js] Activate/Refresh Webcam Feed button clicked. Current streamSource:", streamSource); 
                 if (streamSource !== 'webcam') setStreamSource('webcam'); 
                 setProcessedFeedKey(Date.now()); 
+                console.log("[App.js] webcamWebSocketUrl to be used by WebcamStreamer (after click):", webcamWebSocketUrl);
               }} 
               className={`px-4 py-3 rounded-lg font-semibold shadow-md transition duration-150 ease-in-out bg-teal-600 text-white hover:bg-teal-700 focus:ring-teal-500 focus:outline-none focus:ring-2 focus:ring-opacity-75`}
             > 
