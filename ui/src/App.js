@@ -1,4 +1,4 @@
-// Path: ui/src/App.js (Notification & Timer Debugging)
+// Path: ui/src/App.js (Delay Initial Fetch for Camera Test)
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import Header from './Header'; 
 import Notifications from './Notifications';
@@ -14,20 +14,20 @@ const API_SPOTS_SAVE_ROUTE = `${API_BASE_URL}/api/nuke_test_save`;
 const API_SPOTS_GET_ROUTE = `${API_BASE_URL}/api/spots_v10_get`; 
 
 const NOTIFICATION_DURATION = 10000;
-// const POLLING_INTERVAL = 5000; // ms
+// const POLLING_INTERVAL = 5000; // Polling is currently disabled for testing camera prompt
 
 export default function App() {
   const [editMode, setEditMode] = useState(false);
   const [spots, setSpots] = useState([]);
-  const [statuses, setStatuses] = useState({}); // { spotId: isOccupiedBoolean }
-  const [times, setTimes] = useState({});     // { spotId: freeSinceTimestampISOString }
-  const [notes, setNotes] = useState([]);     // { id, spot_id, timestamp }
+  const [statuses, setStatuses] = useState({}); 
+  const [times, setTimes] = useState({});     
+  const [notes, setNotes] = useState([]);     
   const [muted, setMuted] = useState(false);
   const [filterSpot, setFilterSpot] = useState(null);
   const [streamSource, setStreamSource] = useState('webcam'); 
   const [processedFeedKey, setProcessedFeedKey] = useState(Date.now());
   
-  const prevStatusesRef = useRef({}); // Stores the previous statuses object { spotId: isOccupiedBoolean }
+  const prevStatusesRef = useRef({}); 
 
   const getWebSocketUrl = useCallback(() => {
     if (!API_BASE_URL) { console.error("[App.js] API_BASE_URL is not set."); return null; }
@@ -38,9 +38,11 @@ export default function App() {
   }, []); 
 
   const webcamWebSocketUrl = getWebSocketUrl();
-  console.log("[App.js] Derived webcamWebSocketUrl:", webcamWebSocketUrl, "from API_BASE_URL:", API_BASE_URL);
+  // console.log("[App.js] Derived webcamWebSocketUrl:", webcamWebSocketUrl, "from API_BASE_URL:", API_BASE_URL);
+
+
   const fetchSpots = useCallback(() => {
-    console.log(`[App.js ${new Date().toLocaleTimeString()}] Fetching spots... Current muted state: ${muted}`);
+    // console.log(`[App.js ${new Date().toLocaleTimeString()}] Fetching spots... Current muted state: ${muted}`);
     fetch(API_SPOTS_GET_ROUTE) 
       .then(r => {
         if (!r.ok) {
@@ -53,69 +55,51 @@ export default function App() {
       .then(data => {
         if (data && data.spots) {
           const newApiSpots = data.spots; 
-          console.log("[App.js] Raw spots from API:", JSON.stringify(newApiSpots));
-
           const newSpotConfigs = [];
-          const currentFetchStatuses = {}; // Statuses from THIS fetch
+          const currentFetchStatuses = {}; 
           newApiSpots.forEach(spot => {
             const spotIdStr = String(spot.id);
             newSpotConfigs.push({
                 id: spotIdStr, 
                 x: spot.x, y: spot.y, w: spot.w, h: spot.h,
             });
-            // API returns is_available: true if free, false if occupied
             currentFetchStatuses[spotIdStr] = !spot.is_available; 
           });
-          console.log("[App.js] Previous statuses (prevStatusesRef.current):", JSON.stringify(prevStatusesRef.current));
-          console.log("[App.js] Current fetch statuses (currentFetchStatuses):", JSON.stringify(currentFetchStatuses));
 
-
-          // This state update needs to be carefully managed.
-          // We'll generate notes and newTimes based on comparison, then update all states.
           const newNotesToGenerate = [];
-          const newTimesData = {...times}; // Start with current times
+          setTimes(prevTimes => {
+            const newTimesData = {...prevTimes}; 
+            newSpotConfigs.forEach(spotConfig => {
+              const spotIdStr = spotConfig.id;
+              const isNowOccupied = currentFetchStatuses[spotIdStr];
+              const wasPreviouslyOccupied = prevStatusesRef.current[spotIdStr]; 
 
-          newSpotConfigs.forEach(spotConfig => {
-            const spotIdStr = spotConfig.id;
-            const isNowOccupied = currentFetchStatuses[spotIdStr];
-            const wasPreviouslyOccupied = prevStatusesRef.current[spotIdStr];
-
-            console.log(`[App.js] Spot ${spotIdStr}: Was Occupied: ${wasPreviouslyOccupied}, Is Now Occupied: ${isNowOccupied}`);
-
-            if (wasPreviouslyOccupied === true && isNowOccupied === false) { // Spot became free
-              console.log(`[App.js] Spot ${spotIdStr} became free. Muted: ${muted}`);
-              const nowTimestamp = new Date().toISOString();
-              newTimesData[spotIdStr] = nowTimestamp; 
-              if (!muted) {
-                const notificationId = `${spotIdStr}-${nowTimestamp}-${Math.random()}`;
-                newNotesToGenerate.push({ id: notificationId, spot_id: spotIdStr, timestamp: nowTimestamp });
-                console.log(`[App.js] Queued notification for spot ${spotIdStr}`);
+              if (wasPreviouslyOccupied === true && isNowOccupied === false) { 
+                const nowTimestamp = new Date().toISOString();
+                newTimesData[spotIdStr] = nowTimestamp; 
+                if (!muted) {
+                  const notificationId = `${spotIdStr}-${nowTimestamp}-${Math.random()}`;
+                  newNotesToGenerate.push({ id: notificationId, spot_id: spotIdStr, timestamp: nowTimestamp });
+                }
+              } else if (isNowOccupied === true) { 
+                delete newTimesData[spotIdStr]; 
+              } else if (isNowOccupied === false && newTimesData[spotIdStr] === undefined) {
+                 newTimesData[spotIdStr] = new Date().toISOString(); 
               }
-            } else if (isNowOccupied === true) { // Spot is occupied or became occupied
-              delete newTimesData[spotIdStr]; 
-            } else if (wasPreviouslyOccupied === false && isNowOccupied === false && !newTimesData[spotIdStr]) {
-               // Spot was free, is still free, and doesn't have a timestamp.
-               // This can happen on initial load for an already free spot.
-               newTimesData[spotIdStr] = new Date().toISOString(); 
-            }
+            });
+            return newTimesData;
           });
           
-          // Update states
           setSpots(newSpotConfigs);
           setStatuses(currentFetchStatuses);
-          setTimes(newTimesData);
 
           if (newNotesToGenerate.length > 0) {
-            console.log("[App.js] Adding new notes:", JSON.stringify(newNotesToGenerate));
             setNotes(prevNotesState => {
               const combinedNotes = [...newNotesToGenerate, ...prevNotesState];
-              return combinedNotes.slice(0, 5); // Keep max 5 notes
+              return combinedNotes.slice(0, 5); 
             });
           }
-          
-          // IMPORTANT: Update prevStatusesRef *after* all processing for this fetch is done
           prevStatusesRef.current = { ...currentFetchStatuses };
-
         } else { 
             console.error("[App.js] Fetched spots data malformed:", data); 
         }
@@ -123,13 +107,23 @@ export default function App() {
       .catch(error => { 
           console.error("[App.js] Failed to fetch spots (network or parsing error):", error); 
       });
-  }, [muted, times]); // Added `times` to dependency array of fetchSpots because newTimesData is based on it.
+  }, [muted]); 
 
   useEffect(() => {
+    console.log("[App.js] Effect for initial fetchSpots. editMode:", editMode);
     if (!editMode) {
-      fetchSpots(); 
-      // const intervalId = setInterval(fetchSpots, POLLING_INTERVAL);
-      // return () => clearInterval(intervalId); 
+      // Delay the initial fetch slightly to let other things settle, especially WebcamStreamer
+      const timerId = setTimeout(() => {
+        console.log("[App.js] Executing delayed initial fetchSpots.");
+        fetchSpots();
+      }, 1000); // Delay by 1 second, can adjust
+
+      // Polling is currently disabled for camera prompt debugging
+      // const intervalId = setInterval(fetchSpots, POLLING_INTERVAL); 
+      return () => {
+        clearTimeout(timerId);
+        // clearInterval(intervalId); 
+      };
     }
   }, [editMode, fetchSpots]); 
 
@@ -147,7 +141,6 @@ export default function App() {
   }, [notes]);
 
   const handleSave = useCallback((updatedSpotsFromEditor) => {
-    console.log("[App.js] handleSave called with (raw from editor):", updatedSpotsFromEditor);
     const spotsPayloadToSend = {
         spots: updatedSpotsFromEditor.map(s => ({
             id: String(s.id),
@@ -157,7 +150,6 @@ export default function App() {
             h: Math.round(s.h)
         }))
     };
-    console.log("[App.js] handleSave - Sending FULL SPOTS PAYLOAD to /api/nuke_test_save:", spotsPayloadToSend);
     fetch(API_SPOTS_SAVE_ROUTE, { 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -177,7 +169,6 @@ export default function App() {
       })
       .then(data => {
         if (data.message && data.message.includes("Spots saved to DB successfully!")) { 
-          console.log('Spots save successful (matched backend message):', data);
           setEditMode(false);
           fetchSpots(); 
         } else {
@@ -193,13 +184,8 @@ export default function App() {
   }, [fetchSpots]); 
 
   const handleWebcamStreamingActive = useCallback((isActive) => {
-    // This callback is passed to WebcamStreamer
-    // App.js can react to changes in streaming state if needed
     if (isActive) {
-        console.log("App.js: Webcam streaming reported as active by WebcamStreamer. Refreshing processed feed key.");
         setProcessedFeedKey(Date.now()); 
-    } else {
-        console.log("App.js: Webcam streaming reported as inactive by WebcamStreamer.");
     }
   }, []);
 
@@ -226,10 +212,8 @@ export default function App() {
           {!editMode && ( 
             <button 
               onClick={() => { 
-                console.log("[App.js] Activate/Refresh Webcam Feed button clicked. Current streamSource:", streamSource); 
                 if (streamSource !== 'webcam') setStreamSource('webcam'); 
                 setProcessedFeedKey(Date.now()); 
-                console.log("[App.js] webcamWebSocketUrl to be used by WebcamStreamer (after click):", webcamWebSocketUrl);
               }} 
               className={`px-4 py-3 rounded-lg font-semibold shadow-md transition duration-150 ease-in-out bg-teal-600 text-white hover:bg-teal-700 focus:ring-teal-500 focus:outline-none focus:ring-2 focus:ring-opacity-75`}
             > 
@@ -242,7 +226,7 @@ export default function App() {
           <div className={editMode ? "hidden" : "block mb-6"}> 
             <WebcamStreamer
               webSocketUrl={webcamWebSocketUrl}
-              onStreamingActive={handleWebcamStreamingActive}
+              onStreamingActive={handleWebcamStreamingActive} 
             />
           </div>
         )}
