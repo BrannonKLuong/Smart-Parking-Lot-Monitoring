@@ -241,50 +241,19 @@ def make_capture_deferred():
         logger.info("MAKE_CAPTURE: Mode is WEBSOCKET_STREAM. No cv2.VideoCapture needed by make_capture.")
         return None
     
-    # KVS_STREAM logic is now removed.
-    # The function will now only handle FILE, WEBCAM_INDEX, or direct URL/path.
-
-    cap = None
-    source_to_open = VIDEO_SOURCE_ENV
-
+    cap = None; source_to_open = VIDEO_SOURCE_ENV
     if VIDEO_SOURCE_TYPE_ENV_VAL == "FILE":
-        # Dockerfile copies backend/videos/test_video.mov to /app/videos/test_video.mov
-        # APP_DIR_PATH is /app/app. Its parent is /app.
-        default_file_path = str(APP_DIR_PATH.parent / "videos" / "test_video.mov")
-        if not source_to_open: 
-            source_to_open = default_file_path
-            logger.info(f"MAKE_CAPTURE: No VIDEO_SOURCE for FILE type, defaulting to {source_to_open}")
-        
-        if not os.path.exists(source_to_open):
-            logger.error(f"MAKE_CAPTURE: Video file NOT FOUND: {source_to_open}")
-            raise RuntimeError(f"Video file not found: {source_to_open}")
+        default_file_path = str(APP_DIR_PATH.parent / "videos" / "test_video.mov") 
+        if not source_to_open: source_to_open = default_file_path; logger.info(f"MAKE_CAPTURE: Defaulting to {source_to_open}")
+        if not os.path.exists(source_to_open): raise RuntimeError(f"Video file not found: {source_to_open}")
         cap = cv2.VideoCapture(source_to_open)
-
     elif VIDEO_SOURCE_TYPE_ENV_VAL == "WEBCAM_INDEX":
-        try:
-            idx = int(source_to_open if source_to_open is not None else "0")
-            cap = cv2.VideoCapture(idx)
-            source_to_open = f"Webcam Index {idx}" # For logging
-        except ValueError: 
-            raise RuntimeError(f"Invalid webcam index: {source_to_open}")
-    
-    elif source_to_open: # Treat as other URL type or direct path not explicitly "FILE"
-        logger.info(f"MAKE_CAPTURE: Attempting to open direct video URL/path: {source_to_open}")
-        cap = cv2.VideoCapture(source_to_open, cv2.CAP_FFMPEG)
-    else:
-        # This case is hit if VIDEO_SOURCE_TYPE is not WEBSOCKET_STREAM, FILE, or WEBCAM_INDEX, 
-        # and VIDEO_SOURCE is also not set (or was empty).
-        logger.error(f"MAKE_CAPTURE: VIDEO_SOURCE not set for type {VIDEO_SOURCE_TYPE_ENV_VAL} or type is unhandled and requires a source.")
-        raise RuntimeError(f"VIDEO_SOURCE not set for {VIDEO_SOURCE_TYPE_ENV_VAL} or unhandled type that needs a source.")
-
-    if cap is None or not cap.isOpened():
-        err_msg = f"MAKE_CAPTURE: FATAL - Could not open video source. Type='{VIDEO_SOURCE_TYPE_ENV_VAL}', Source='{source_to_open}'"
-        logger.error(err_msg)
-        raise RuntimeError(err_msg)
-    
-    logger.info(f"MAKE_CAPTURE: Successfully opened: {source_to_open}")
-    video_capture_global = cap
-    return cap
+        try: idx = int(source_to_open if source_to_open is not None else "0"); cap = cv2.VideoCapture(idx); source_to_open = f"Webcam Index {idx}"
+        except ValueError: raise RuntimeError(f"Invalid webcam index: {source_to_open}")
+    elif source_to_open: cap = cv2.VideoCapture(source_to_open, cv2.CAP_FFMPEG)
+    else: raise RuntimeError(f"VIDEO_SOURCE not set for {VIDEO_SOURCE_TYPE_ENV_VAL} or unhandled type.")
+    if cap is None or not cap.isOpened(): raise RuntimeError(f"MAKE_CAPTURE: FATAL - Could not open: {source_to_open}")
+    logger.info(f"MAKE_CAPTURE: Successfully opened: {source_to_open}"); video_capture_global = cap; return cap
 
 async def video_processor_deferred():
     global video_processing_active, video_capture_global, latest_frame_with_all_overlays, previous_spot_states_global, empty_start, notified, video_frame_queue
@@ -301,11 +270,11 @@ async def video_processor_deferred():
         try: 
             logger.info("VIDEO_PROCESSOR: Non-WebSocket mode, calling make_capture_deferred().")
             cap = make_capture_deferred()
-            if cap is None and VIDEO_SOURCE_TYPE_ENV_VAL not in ["WEBSOCKET_STREAM"]: # make_capture failed for non-WS type
+            if cap is None and VIDEO_SOURCE_TYPE_ENV_VAL not in ["WEBSOCKET_STREAM"]:
                  raise RuntimeError(f"make_capture_deferred returned None for non-WebSocket type {VIDEO_SOURCE_TYPE_ENV_VAL}")
         except RuntimeError as e: 
             logger.error(f"VIDEO_PROCESSOR: Failed to init capture via make_capture_deferred: {e}", exc_info=True)
-            video_processing_active = False; return # Exit if capture fails
+            video_processing_active = False; return 
     
     video_processing_active = True
     VACANCY_DELAY = timedelta(seconds=FCM_VACANCY_DELAY_SECONDS_ENV)
@@ -330,7 +299,7 @@ async def video_processor_deferred():
                 else: logger.warning(f"VP: WS received non-JPEG base64: {frame_data_url[:50]}")
             except asyncio.TimeoutError: await asyncio.sleep(0.01); continue
             except Exception as e: logger.error(f"VP: WS frame processing error: {e}", exc_info=True); await asyncio.sleep(0.1); continue
-        else: # Capture mode (File or Webcam Index)
+        else: 
             if cap and cap.isOpened(): 
                 frame_count +=1
                 if frame_skip_interval > 0 and frame_count % (frame_skip_interval + 1) != 0:
@@ -340,22 +309,20 @@ async def video_processor_deferred():
                 logger.warning("VP: Capture not open or lost in loop. Attempting to reopen..."); await asyncio.sleep(1)
                 try: 
                     if cap: cap.release()
-                    cap = make_capture_deferred() # Try to reopen
+                    cap = make_capture_deferred() 
                     if not cap: logger.error("VP: Failed to reopen capture. Stopping loop."); video_processing_active = False; break
                     frame_count = 0 
-                    source_fps_from_cap = cap.get(cv2.CAP_PROP_FPS) if cap else 0 # Update FPS if re-opened
+                    source_fps_from_cap = cap.get(cv2.CAP_PROP_FPS) if cap else 0 
                     frame_skip_interval = int(source_fps_from_cap / target_fps) if source_fps_from_cap > 0 and target_fps > 0 and target_fps < source_fps_from_cap else 0
                 except Exception as e_recap: logger.error(f"VP: Error reopening capture in loop: {e_recap}"); video_processing_active = False; break
                 continue
         
         if not ret or frame is None: 
-            if not is_websocket_stream_mode and cap and not cap.isOpened(): # If file ended or webcam disconnected
+            if not is_websocket_stream_mode and cap and not cap.isOpened(): 
                 logger.info("VP: Video source ended or disconnected (e.g. end of file). Stopping processor.")
                 video_processing_active = False; break 
             logger.warning("VP: Failed to get frame or frame is None."); await asyncio.sleep(0.05); continue
 
-        # --- Your full object detection, spot logic, notification, and overlay drawing logic ---
-        # This section should be identical to your locally working merged main.py's video_processor loop content
         yolo_results = []
         try: yolo_results = await loop.run_in_executor(None, cv_model_module.detect, frame.copy())
         except Exception as e: logger.error(f"VP: detect error: {e}", exc_info=True)
@@ -379,7 +346,7 @@ async def video_processor_deferred():
                 if is_now_occ: empty_start[spot_id] = None
                 else: empty_start[spot_id] = now; notified[spot_id] = False
             if not is_now_occ and empty_start.get(spot_id) and not notified.get(spot_id, False):
-                if (now - empty_start[spot_id]) >= VACANCY_DELAY: # VACANCY_DELAY is from global scope
+                if (now - empty_start[spot_id]) >= VACANCY_DELAY: 
                     logger.info(f"VP: Spot {spot_id} confirmed vacant for {VACANCY_DELAY}, attempting FCM.")
                     try:
                         spot_id_int = int(spot_id)
@@ -396,21 +363,18 @@ async def video_processor_deferred():
             if not (isinstance(coords, tuple) and len(coords) == 4): continue
             sx,sy,sw,sh = coords; is_occ = previous_spot_states_global.get(lbl,False); color = (0,0,255) if is_occ else (0,255,0)
             cv2.rectangle(frame_to_display, (sx,sy), (sx+sw, sy+sh), color, 2); cv2.putText(frame_to_display, lbl, (sx,sy-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color,1)
-        if yolo_results: # Ensure yolo_results is a list of result objects
-            for res in yolo_results: # Iterate through each result object
-                if hasattr(res, 'boxes') and res.boxes is not None: # Check if the object has 'boxes'
-                    # Access detection details (example assumes Ultralytics YOLOv8 output structure)
+        if yolo_results: 
+            for res in yolo_results: 
+                if hasattr(res, 'boxes') and res.boxes is not None: 
                     vehicle_classes_for_drawing = {"car","truck","bus","motorbike","bicycle"}
-                    box_coords_list = res.boxes.xyxy.tolist()  # Bounding box coordinates
-                    class_indices = res.boxes.cls.tolist()    # Class indices
-                    class_names_map = res.names               # Map from class index to class name, e.g., {0: 'person', 1: 'car'}
-                    
+                    box_coords_list = res.boxes.xyxy.tolist()  
+                    class_indices = res.boxes.cls.tolist()    
+                    class_names_map = res.names               
                     for i, box_xyxy in enumerate(box_coords_list):
                         class_idx = int(class_indices[i])
                         detected_class_name = class_names_map.get(class_idx)
                         if detected_class_name and detected_class_name in vehicle_classes_for_drawing: 
                             cv2.rectangle(frame_to_display, (int(box_xyxy[0]),int(box_xyxy[1])), (int(box_xyxy[2]),int(box_xyxy[3])), (0,255,255),1)
-        # --- End of your full processing logic ---
         
         async with frame_access_lock: latest_frame_with_all_overlays = frame_to_display
         
@@ -457,10 +421,7 @@ async def get_spots_config_v2_deferred(db: Session = Depends(get_db_session_depe
     logger.info("API: GET /api/spots_v10_get hit.")
     spots_data_response = []
     try:
-        # spot_logic.refresh_spots() is called within spot_logic_module using its own session
-        # if it needs to be called here, ensure it uses db_engine_global
-        spot_logic_module.refresh_spots() # This uses db_engine_global internally
-        
+        spot_logic_module.refresh_spots() 
         for spot_id, coords in spot_logic_module.SPOTS.items():
             is_available = not previous_spot_states_global.get(str(spot_id), False)
             spots_data_response.append({"id": str(spot_id), "x": coords[0], "y": coords[1], "w": coords[2], "h": coords[3], "is_available": is_available})
@@ -476,7 +437,6 @@ async def save_spots_config_v2_deferred(payload: SpotsUpdateRequest, db: Session
     logger.info(f"API: POST /api/nuke_test_save: {payload.model_dump_json(indent=1)}")
     default_camera_id = "default_camera"
     try:
-        # This is your full logic from the previously working merged main.py
         statement_existing = select(ParkingSpotConfig_model).where(ParkingSpotConfig_model.camera_id == default_camera_id)
         existing_spot_configs_db = db.exec(statement_existing).all()
         existing_spots_map = {str(config.spot_label): config for config in existing_spot_configs_db}
@@ -496,7 +456,7 @@ async def save_spots_config_v2_deferred(payload: SpotsUpdateRequest, db: Session
                 new_config = ParkingSpotConfig_model(spot_label=label, camera_id=default_camera_id, 
                                                 x_coord=spot_in_model.x, y_coord=spot_in_model.y, 
                                                 width=spot_in_model.w, height=spot_in_model.h,
-                                                created_at=datetime.utcnow()) # Assuming created_at is part of your model
+                                                created_at=datetime.utcnow()) 
                 db.add(new_config)
             response_spots_data.append(spot_in_model.model_dump())
 
@@ -506,10 +466,9 @@ async def save_spots_config_v2_deferred(payload: SpotsUpdateRequest, db: Session
         db.commit()
         logger.info("API: Spots saved to DB.")
         
-        spot_logic_module.refresh_spots() # Refresh spots in memory
+        spot_logic_module.refresh_spots() 
         
         current_db_spot_ids = set(spot_logic_module.SPOTS.keys()); now_new = datetime.utcnow()
-        # Update global states for previous_spot_states_global, empty_start, notified
         for sid_g in list(previous_spot_states_global.keys()):
             if str(sid_g) not in current_db_spot_ids: 
                 previous_spot_states_global.pop(str(sid_g),None);empty_start.pop(str(sid_g),None);notified.pop(str(sid_g),None)
@@ -548,7 +507,7 @@ async def websocket_spots_endpoint_deferred(websocket: WebSocket):
     await manager.connect(websocket) 
     try:
         current_statuses = {}
-        spot_logic_module.refresh_spots() # Ensure spots are fresh
+        spot_logic_module.refresh_spots() 
         for lbl, coords in spot_logic_module.SPOTS.items():
             if isinstance(coords,tuple) and len(coords)==4: 
                 current_statuses[lbl] = {
@@ -559,7 +518,6 @@ async def websocket_spots_endpoint_deferred(websocket: WebSocket):
         await websocket.send_text(json.dumps({"type":"all_spot_statuses", "data":current_statuses, "timestamp":time.time()},default=str))
         while True: 
             try: 
-                # Keep connection alive, optionally process client messages
                 await asyncio.wait_for(websocket.receive_text(), timeout=60) 
             except asyncio.TimeoutError: 
                 await websocket.send_text(json.dumps({"type":"ping"}))
@@ -581,7 +539,7 @@ async def websocket_video_upload_endpoint_deferred(websocket: WebSocket):
                 try: 
                     video_frame_queue.get_nowait(); video_frame_queue.task_done() 
                     logger.info("WS-Upload: video_frame_queue was full, discarded oldest frame.")
-                except asyncio.QueueEmpty: pass # Should not happen if full() is true
+                except asyncio.QueueEmpty: pass
             await video_frame_queue.put(data)
     except WebSocketDisconnect: logger.info(f"WS-Upload: Client disconnected {websocket.client}")
     except Exception as e: logger.error(f"WS-Upload: Error for {websocket.client}: {e}", exc_info=True)
@@ -595,7 +553,7 @@ async def register_fcm_token_api_deferred(payload: TokenRegistration, db: Sessio
         if existing_token: 
             return {"message": "Token already registered."}
         new_token = DeviceToken_model(token=payload.token, platform=payload.platform)
-        db.add(new_token); db.commit(); db.refresh(new_token) # Refresh to get ID if needed later
+        db.add(new_token); db.commit(); db.refresh(new_token) 
         return {"message": "Token registered successfully."}
     except Exception as e: 
         db.rollback(); logger.error(f"FCM token reg error: {e}", exc_info=True); raise HTTPException(status_code=500, detail="Failed to register FCM token.")
@@ -608,8 +566,6 @@ if STATIC_FRONTEND_DIR.exists() and (STATIC_FRONTEND_DIR / "index.html").exists(
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_react_app_deferred(request: Request, full_path: str):
         index_html_path = STATIC_FRONTEND_DIR / "index.html"
-        # This catch-all should be the last route.
-        # FastAPI tries specific routes first. If none match, this will serve index.html.
         return FileResponse(index_html_path)
 else:
     logger.warning(f"MAIN.PY: Static frontend directory or index.html not found at {STATIC_FRONTEND_DIR}. SPA serving disabled.")
