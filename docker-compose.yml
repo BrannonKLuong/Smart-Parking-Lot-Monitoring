@@ -1,3 +1,4 @@
+# In your docker-compose.yml
 services:
   db:
     image: postgres:15
@@ -18,33 +19,26 @@ services:
 
   backend:
     build:
-      context: . 
-      dockerfile: backend/Dockerfile 
+      context: ./backend  # <-- IMPORTANT: Set context to ./backend
+      dockerfile: Dockerfile # Dockerfile is now located at backend/Dockerfile
     depends_on:
       db: 
         condition: service_healthy 
     environment:
-      # --- Critical for merged functionality ---
+      # Use HTTP_UPLOAD_STREAM if you added this specific check in main.py,
+      # otherwise WEBSOCKET_STREAM will also work if http_upload_frame_endpoint checks for it
+      # to enable using the video_frame_queue.
+      VIDEO_SOURCE_TYPE: "HTTP_UPLOAD_STREAM" 
+      VIDEO_PROCESSING_FPS: "5" # Adjust as needed for local performance
       DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
-      FIREBASE_CRED_PATH: /app/secrets/firebase-sa.json # Path inside the container
-      VIDEO_SOURCE_TYPE: "WEBSOCKET_STREAM" # Default for UI webcam streaming
-      
-      # --- Optional, but good to set based on your main.py defaults or for other modes ---
-      VIDEO_SOURCE: /app/videos/test_video.mov # Used if VIDEO_SOURCE_TYPE=FILE
-      VIDEO_PROCESSING_FPS: "15" 
-      FCM_VACANCY_DELAY_SECONDS: "5"
-      # AWS_REGION: "your-aws-region" # If using KVS
-      # MODEL_PATH: "/app/yolov8n.pt" # If cv_model.py uses this env var
-
-      # --- Standard good practices ---
+      FIREBASE_CRED: /app/secrets/firebase-sa.json # In-container path, matching main.py
       PYTHONUNBUFFERED: "1" 
-      LOG_LEVEL: "debug" # As set in your docker-compose
-      # Ensure your main.py's logging.basicConfig also respects LOG_LEVEL if desired
-      
+      LOG_LEVEL: "debug" 
+      # Add any other env vars your main.py might need
     ports:
-      - "8000:8000"
-    # volumes: # Keep commented for testing the image build, uncomment for dev if needed
-    #   - ./backend:/app # This would map your local backend to /app in container
+      - "8000:8000" 
+    # volumes: # Optional: for live code reloading during local development
+    #   - ./backend/app:/app/app 
 
 volumes:
   pgdata:

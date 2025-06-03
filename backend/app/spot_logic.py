@@ -4,8 +4,8 @@ from typing import Dict, Tuple, List, cast, Callable
 import datetime
 
 # Import database components
-from .db import SessionLocal, ParkingSpotConfig, engine as db_engine
-from sqlmodel import Session, select
+from .db import ParkingSpotConfig, engine as db_engine # SessionLocal not needed here
+from sqlmodel import Session as SQLModelSession, select # Use SQLModel Session & select for internal logic
 
 logger = logging.getLogger(__name__)
 
@@ -13,16 +13,17 @@ logger = logging.getLogger(__name__)
 # Initialize as empty; main.py's startup will populate it after DB init.
 SPOTS: Dict[str, Tuple[int, int, int, int]] = {}
 
-def load_spots_from_db(session: Session) -> Dict[str, Tuple[int, int, int, int]]:
+def load_spots_from_db(session: SQLModelSession) -> Dict[str, Tuple[int, int, int, int]]:
     """
     Loads spot configurations from the parking_spot_config table for a given camera_id.
+    Uses a SQLModelSession.
     Returns a dictionary in the format {spot_label: (x, y, width, height)}.
     """
     camera_id_to_load = "default_camera"
     loaded_spots: Dict[str, Tuple[int, int, int, int]] = {}
     try:
         statement = select(ParkingSpotConfig).where(ParkingSpotConfig.camera_id == camera_id_to_load)
-        results = session.exec(statement).all()
+        results = session.exec(statement).all() # SQLModel session uses .exec()
         for config in results:
             loaded_spots[config.spot_label] = (
                 config.x_coord,
@@ -32,25 +33,24 @@ def load_spots_from_db(session: Session) -> Dict[str, Tuple[int, int, int, int]]
             )
         logger.info(f"[spot_logic] Loaded {len(loaded_spots)} spots from DB for camera '{camera_id_to_load}'.")
     except Exception as e:
-        # This can happen if the table doesn't exist yet (e.g., during initial startup before migrations/init_db)
         logger.warning(f"[spot_logic] Could not load spots from DB in load_spots_from_db: {e}. This might be normal during initial setup.")
-        return {} # Return empty if DB query fails
+        return {}
     return loaded_spots
 
 def refresh_spots() -> None:
     """
     Re-read spot configurations from the database and update the global SPOTS dict in-place.
+    This function creates its own SQLModelSession.
     """
     logger.info("[spot_logic] Attempting to refresh spots from database...")
     try:
-        with Session(db_engine) as session: # Use the imported db_engine
+        with SQLModelSession(db_engine) as session: # Create and use a SQLModelSession
             new_spots_data = load_spots_from_db(session)
             SPOTS.clear()
             SPOTS.update(new_spots_data)
             logger.info(f"[spot_logic] SPOTS global dict refreshed. Current count: {len(SPOTS)}")
     except Exception as e:
         logger.error(f"[spot_logic] CRITICAL ERROR during refresh_spots: {e}", exc_info=True)
-        # SPOTS might be empty or outdated if this fails.
 
 def get_spot_states(detections, # Assuming detections is a list of result objects from Ultralytics
                       vehicle_classes: set = {"car", "truck", "bus", "motorbike", "bicycle"}
@@ -61,8 +61,8 @@ def get_spot_states(detections, # Assuming detections is a list of result object
     Returns a dictionary {spot_label: is_occupied_boolean}.
     """
     if not SPOTS:
-        logger.warning("[spot_logic] get_spot_states called but SPOTS is empty. Try refreshing spots or checking DB.")
-        return {}
+        # logger.warning("[spot_logic] get_spot_states called but SPOTS is empty. Try refreshing spots or checking DB.")
+        return {} # Return empty if no spots are configured
 
     states: Dict[str, bool] = {spot_label: False for spot_label in SPOTS.keys()}
 
@@ -105,6 +105,4 @@ def get_spot_states(detections, # Assuming detections is a list of result object
         logger.error(f"[spot_logic] Generic error processing detections in get_spot_states: {e}", exc_info=True)
     return states
 
-# Initial call to refresh_spots is removed from module level.
-# It will be called by main.py after init_db().
 logger.info("[spot_logic.py] loaded. SPOTS will be populated by main.py's startup event.")

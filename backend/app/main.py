@@ -1,4 +1,4 @@
-# backend/app/main.py (Full Logic, KVS Removed, Deferred Init)
+# backend/app/main.py (Full Logic, KVS Removed, Deferred Init, HTTP Upload)
 import os
 import cv2
 import asyncio
@@ -48,10 +48,10 @@ DATABASE_URL_ENV = os.getenv("DATABASE_URL")
 FIREBASE_CRED_PATH_ENV = os.getenv("FIREBASE_CRED") 
 FCM_VACANCY_DELAY_SECONDS_ENV = int(os.getenv("FCM_VACANCY_DELAY_SECONDS", "5"))
 VIDEO_PROCESSING_FPS_ENV = int(os.getenv("VIDEO_PROCESSING_FPS", "5")) 
-VIDEO_SOURCE_TYPE_ENV_VAL = os.getenv("VIDEO_SOURCE_TYPE", "WEBSOCKET_STREAM").upper()
+VIDEO_SOURCE_TYPE_ENV_VAL = os.getenv("VIDEO_SOURCE_TYPE", "WEBSOCKET_STREAM").upper() # Defaulting to allow queue processing
 VIDEO_SOURCE_ENV = os.getenv("VIDEO_SOURCE")
 LOG_LEVEL_ENV = os.getenv("LOG_LEVEL", "INFO").upper()
-AWS_REGION_ENV = os.getenv("AWS_REGION", "us-east-2") # Retained for general AWS SDK use if any
+AWS_REGION_ENV = os.getenv("AWS_REGION", "us-east-2") 
 
 if LOG_LEVEL_ENV == "DEBUG":
     logging.getLogger().setLevel(logging.DEBUG)
@@ -72,7 +72,7 @@ DB_INIT_RETRY_DELAY = 5
 @app.get("/")
 async def root_health_check():
     logger.info("HEALTH_CHECK: Root path / accessed and responding OK.")
-    return {"message": "Smart Parking API (Deferred Init - KVS Removed) is running and healthy"}
+    return {"message": "Smart Parking API (HTTP Frame Upload Mode) is running and healthy"}
 
 # --- Module Placeholders ---
 db_module = None
@@ -89,6 +89,8 @@ firebase_app_initialized_flag = False
 class SpotConfigIn(BaseModel): id: str; x: int; y: int; w: int; h: int
 class SpotsUpdateRequest(BaseModel): spots: List[SpotConfigIn]
 class TokenRegistration(BaseModel): token: str; platform: str = "android"
+class FrameUploadPayload(BaseModel): # For HTTP Frame Upload
+    frame: str 
 
 # --- Global States ---
 video_processing_active = False
@@ -103,7 +105,7 @@ video_frame_queue: asyncio.Queue = asyncio.Queue(maxsize=10)
 
 APP_DIR_PATH = Path(__file__).resolve().parent 
 
-# --- Connection Manager ---
+# --- Connection Manager (For /ws/spots) ---
 class ConnectionManager:
     def __init__(self): 
         self.active_connections: List[WebSocket] = []
@@ -237,8 +239,8 @@ def make_capture_deferred():
     global video_capture_global, APP_DIR_PATH
     logger.info(f"MAKE_CAPTURE: Type: {VIDEO_SOURCE_TYPE_ENV_VAL}, Source: {VIDEO_SOURCE_ENV}")
     
-    if VIDEO_SOURCE_TYPE_ENV_VAL == "WEBSOCKET_STREAM":
-        logger.info("MAKE_CAPTURE: Mode is WEBSOCKET_STREAM. No cv2.VideoCapture needed by make_capture.")
+    if VIDEO_SOURCE_TYPE_ENV_VAL == "WEBSOCKET_STREAM" or VIDEO_SOURCE_TYPE_ENV_VAL == "HTTP_UPLOAD_STREAM":
+        logger.info("MAKE_CAPTURE: Mode is for queued frames. No cv2.VideoCapture needed by make_capture.")
         return None
     
     cap = None; source_to_open = VIDEO_SOURCE_ENV
@@ -264,14 +266,15 @@ async def video_processor_deferred():
         video_processing_active = False; return
     
     logger.info("VIDEO_PROCESSOR: Task starting...")
-    cap = None; is_websocket_stream_mode = (VIDEO_SOURCE_TYPE_ENV_VAL == "WEBSOCKET_STREAM")
+    cap = None; 
+    is_queued_frame_mode = (VIDEO_SOURCE_TYPE_ENV_VAL == "WEBSOCKET_STREAM" or VIDEO_SOURCE_TYPE_ENV_VAL == "HTTP_UPLOAD_STREAM")
 
-    if not is_websocket_stream_mode:
+    if not is_queued_frame_mode: 
         try: 
-            logger.info("VIDEO_PROCESSOR: Non-WebSocket mode, calling make_capture_deferred().")
+            logger.info("VIDEO_PROCESSOR: Non-queued mode, calling make_capture_deferred().")
             cap = make_capture_deferred()
-            if cap is None and VIDEO_SOURCE_TYPE_ENV_VAL not in ["WEBSOCKET_STREAM"]:
-                 raise RuntimeError(f"make_capture_deferred returned None for non-WebSocket type {VIDEO_SOURCE_TYPE_ENV_VAL}")
+            if cap is None and VIDEO_SOURCE_TYPE_ENV_VAL not in ["WEBSOCKET_STREAM", "HTTP_UPLOAD_STREAM"]:
+                 raise RuntimeError(f"make_capture_deferred returned None for non-queued type {VIDEO_SOURCE_TYPE_ENV_VAL}")
         except RuntimeError as e: 
             logger.error(f"VIDEO_PROCESSOR: Failed to init capture via make_capture_deferred: {e}", exc_info=True)
             video_processing_active = False; return 
@@ -280,25 +283,25 @@ async def video_processor_deferred():
     VACANCY_DELAY = timedelta(seconds=FCM_VACANCY_DELAY_SECONDS_ENV)
     loop = asyncio.get_event_loop()
     target_fps = VIDEO_PROCESSING_FPS_ENV
-    logger.info(f"VIDEO_PROCESSOR: Loop starting. Mode: {'WebSocket' if is_websocket_stream_mode else 'Capture'}. Target FPS: {target_fps}")
+    logger.info(f"VIDEO_PROCESSOR: Loop starting. Mode: {'Queued (WS/HTTP)' if is_queued_frame_mode else 'Capture'}. Target FPS: {target_fps}")
     
     frame_count = 0
-    source_fps_from_cap = cap.get(cv2.CAP_PROP_FPS) if cap and not is_websocket_stream_mode else 0
+    source_fps_from_cap = cap.get(cv2.CAP_PROP_FPS) if cap and not is_queued_frame_mode else 0
     frame_skip_interval = int(source_fps_from_cap / target_fps) if source_fps_from_cap > 0 and target_fps > 0 and target_fps < source_fps_from_cap else 0
     
     while video_processing_active:
         frame = None; ret = False; processing_start_time = time.perf_counter()
-        if is_websocket_stream_mode:
+        if is_queued_frame_mode: 
             try:
                 frame_data_url = await asyncio.wait_for(video_frame_queue.get(), timeout=1.0)
                 if frame_data_url.startswith('data:image/jpeg;base64,'):
                     img_bytes = base64.b64decode(frame_data_url.split(',',1)[1]); arr = np.frombuffer(img_bytes, np.uint8)
                     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                     if frame is not None: ret=True; video_frame_queue.task_done()
-                    else: logger.warning("VP: WS frame decode failed.")
-                else: logger.warning(f"VP: WS received non-JPEG base64: {frame_data_url[:50]}")
+                    else: logger.warning("VP: Queued frame decode failed.")
+                else: logger.warning(f"VP: Queued frame not JPEG base64: {frame_data_url[:50]}")
             except asyncio.TimeoutError: await asyncio.sleep(0.01); continue
-            except Exception as e: logger.error(f"VP: WS frame processing error: {e}", exc_info=True); await asyncio.sleep(0.1); continue
+            except Exception as e: logger.error(f"VP: Queued frame processing error: {e}", exc_info=True); await asyncio.sleep(0.1); continue
         else: 
             if cap and cap.isOpened(): 
                 frame_count +=1
@@ -318,11 +321,11 @@ async def video_processor_deferred():
                 continue
         
         if not ret or frame is None: 
-            if not is_websocket_stream_mode and cap and not cap.isOpened(): 
+            if not is_queued_frame_mode and cap and not cap.isOpened(): 
                 logger.info("VP: Video source ended or disconnected (e.g. end of file). Stopping processor.")
                 video_processing_active = False; break 
             logger.warning("VP: Failed to get frame or frame is None."); await asyncio.sleep(0.05); continue
-
+        
         yolo_results = []
         try: yolo_results = await loop.run_in_executor(None, cv_model_module.detect, frame.copy())
         except Exception as e: logger.error(f"VP: detect error: {e}", exc_info=True)
@@ -366,14 +369,10 @@ async def video_processor_deferred():
         if yolo_results: 
             for res in yolo_results: 
                 if hasattr(res, 'boxes') and res.boxes is not None: 
-                    vehicle_classes_for_drawing = {"car","truck","bus","motorbike","bicycle"}
-                    box_coords_list = res.boxes.xyxy.tolist()  
-                    class_indices = res.boxes.cls.tolist()    
-                    class_names_map = res.names               
-                    for i, box_xyxy in enumerate(box_coords_list):
-                        class_idx = int(class_indices[i])
-                        detected_class_name = class_names_map.get(class_idx)
-                        if detected_class_name and detected_class_name in vehicle_classes_for_drawing: 
+                    v_classes = {"car","truck","bus","motorbike","bicycle"}; b_coords = res.boxes.xyxy.tolist(); c_indices = res.boxes.cls.tolist(); c_names = res.names
+                    for i, box_xyxy in enumerate(b_coords):
+                        class_idx = int(c_indices[i]); detected_class_name = c_names.get(class_idx)
+                        if detected_class_name and detected_class_name in v_classes: 
                             cv2.rectangle(frame_to_display, (int(box_xyxy[0]),int(box_xyxy[1])), (int(box_xyxy[2]),int(box_xyxy[3])), (0,255,255),1)
         
         async with frame_access_lock: latest_frame_with_all_overlays = frame_to_display
@@ -384,7 +383,7 @@ async def video_processor_deferred():
         if sleep_for > 0: await asyncio.sleep(sleep_for)
         else: await asyncio.sleep(0.001) 
     
-    logger.info("VIDEO_PROCESSOR: Loop ended.")
+    logger.info("VIDEO_PROCESSOR: Loop ended.");
     if cap: cap.release()
 
 def notify_users_for_spot_vacancy_deferred(spot_id_int: int):
@@ -410,10 +409,25 @@ def get_db_session_dependency():
         logger.error("API_DEPENDENCY: SessionLocal_db not initialized yet!")
         raise HTTPException(status_code=503, detail="DB session not available. Service initializing.")
     db = SessionLocal_db()
-    try:
-        yield db
-    finally:
-        db.close()
+    try: yield db
+    finally: db.close()
+
+@app.post("/api/upload_frame") 
+async def http_upload_frame_endpoint(payload: FrameUploadPayload):
+    global video_frame_queue, VIDEO_SOURCE_TYPE_ENV_VAL
+    logger.info(f"API: Received frame via HTTP POST (data URL starts with: {payload.frame[:60]}...)") 
+    if VIDEO_SOURCE_TYPE_ENV_VAL == "WEBSOCKET_STREAM" or VIDEO_SOURCE_TYPE_ENV_VAL == "HTTP_UPLOAD_STREAM":
+        if not video_frame_queue:
+            logger.error("API: video_frame_queue is not initialized!")
+            raise HTTPException(status_code=500, detail="Internal server error: frame queue not ready.")
+        if video_frame_queue.full():
+            try: video_frame_queue.get_nowait(); video_frame_queue.task_done(); logger.info("API: video_frame_queue was full for HTTP upload. Discarded.")
+            except asyncio.QueueEmpty: pass 
+        await video_frame_queue.put(payload.frame)
+        return {"status": "frame received by HTTP endpoint"}
+    else:
+        logger.warning(f"API: Frame via HTTP POST ignored, backend VIDEO_SOURCE_TYPE is '{VIDEO_SOURCE_TYPE_ENV_VAL}'.")
+        return {"status": "frame ignored, backend not in expected mode"}
 
 @app.get("/api/spots_v10_get")
 async def get_spots_config_v2_deferred(db: Session = Depends(get_db_session_dependency)): 
@@ -440,51 +454,32 @@ async def save_spots_config_v2_deferred(payload: SpotsUpdateRequest, db: Session
         statement_existing = select(ParkingSpotConfig_model).where(ParkingSpotConfig_model.camera_id == default_camera_id)
         existing_spot_configs_db = db.exec(statement_existing).all()
         existing_spots_map = {str(config.spot_label): config for config in existing_spot_configs_db}
-        
-        incoming_spot_labels = set()
-        response_spots_data = []
+        incoming_spot_labels = set(); response_spots_data = []
         for spot_in_model in payload.spots:
-            label = str(spot_in_model.id)
-            incoming_spot_labels.add(label)
+            label = str(spot_in_model.id); incoming_spot_labels.add(label)
             if label in existing_spots_map:
-                config_to_update = existing_spots_map[label]
-                config_to_update.x_coord, config_to_update.y_coord = spot_in_model.x, spot_in_model.y
-                config_to_update.width, config_to_update.height = spot_in_model.w, spot_in_model.h
-                config_to_update.updated_at = datetime.utcnow()
-                db.add(config_to_update)
-            else:
-                new_config = ParkingSpotConfig_model(spot_label=label, camera_id=default_camera_id, 
-                                                x_coord=spot_in_model.x, y_coord=spot_in_model.y, 
-                                                width=spot_in_model.w, height=spot_in_model.h,
-                                                created_at=datetime.utcnow()) 
-                db.add(new_config)
+                cfg = existing_spots_map[label]
+                cfg.x_coord, cfg.y_coord, cfg.width, cfg.height, cfg.updated_at = spot_in_model.x, spot_in_model.y, spot_in_model.w, spot_in_model.h, datetime.utcnow()
+                db.add(cfg)
+            else: db.add(ParkingSpotConfig_model(spot_label=label, camera_id=default_camera_id, x_coord=spot_in_model.x, y_coord=spot_in_model.y, width=spot_in_model.w, height=spot_in_model.h, created_at=datetime.utcnow()))
             response_spots_data.append(spot_in_model.model_dump())
-
-        for existing_label, config_to_delete in existing_spots_map.items():
-            if existing_label not in incoming_spot_labels:
-                db.delete(config_to_delete)
-        db.commit()
-        logger.info("API: Spots saved to DB.")
-        
+        for ex_lbl, cfg_del in existing_spots_map.items():
+            if ex_lbl not in incoming_spot_labels: db.delete(cfg_del)
+        db.commit(); logger.info("API: Spots saved to DB.")
         spot_logic_module.refresh_spots() 
-        
-        current_db_spot_ids = set(spot_logic_module.SPOTS.keys()); now_new = datetime.utcnow()
+        current_db_ids = set(spot_logic_module.SPOTS.keys()); now_new = datetime.utcnow()
         for sid_g in list(previous_spot_states_global.keys()):
-            if str(sid_g) not in current_db_spot_ids: 
-                previous_spot_states_global.pop(str(sid_g),None);empty_start.pop(str(sid_g),None);notified.pop(str(sid_g),None)
-        for sid_db in current_db_spot_ids:
+            if str(sid_g) not in current_db_ids: previous_spot_states_global.pop(str(sid_g),None);empty_start.pop(str(sid_g),None);notified.pop(str(sid_g),None)
+        for sid_db in current_db_ids:
             s_id_db = str(sid_db)
-            if s_id_db not in previous_spot_states_global: 
-                previous_spot_states_global[s_id_db]=False;empty_start[s_id_db]=now_new;notified[s_id_db]=False
-        
+            if s_id_db not in previous_spot_states_global: previous_spot_states_global[s_id_db]=False;empty_start[s_id_db]=now_new;notified[s_id_db]=False
         spots_event_data = [{"id":l,"x":c[0],"y":c[1],"w":c[2],"h":c[3]} for l,c in spot_logic_module.SPOTS.items()]
         enqueue_event({"type":"spots_config_updated", "data":{"spots":spots_event_data}})
         return {"message": "Spots saved to DB successfully!", "spots": response_spots_data}
-    except Exception as e: 
-        db.rollback(); logger.error(f"API POST /api/nuke_test_save error: {e}", exc_info=True); raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: db.rollback(); logger.error(f"API POST error: {e}", exc_info=True); raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/webcam_feed")
-async def mjpeg_webcam_feed_deferred():
+async def mjpeg_webcam_feed_deferred(): 
     if not cv_model_module: raise HTTPException(status_code=503, detail="Video components not ready")
     async def generate_mjpeg_frames(): 
         global latest_frame_with_all_overlays, frame_access_lock
@@ -501,8 +496,27 @@ async def mjpeg_webcam_feed_deferred():
             await asyncio.sleep(1.0 / VIDEO_PROCESSING_FPS_ENV) 
     return StreamingResponse(generate_mjpeg_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-@app.websocket("/ws/spots")
-async def websocket_spots_endpoint_deferred(websocket: WebSocket):
+# --- Original WebSocket for video_stream_upload is COMMENTED OUT for HTTP POST approach ---
+# @app.websocket("/ws/video_stream_upload")
+# async def websocket_video_upload_endpoint_deferred(websocket: WebSocket):
+#     global video_frame_queue 
+#     await websocket.accept()
+#     logger.info(f"WS-Upload: Client connected {websocket.client}")
+#     try:
+#         while True: 
+#             data = await websocket.receive_text()
+#             if VIDEO_SOURCE_TYPE_ENV_VAL != "WEBSOCKET_STREAM": 
+#                 logger.warning("WS-Upload: Frame recv but backend not in WEBSOCKET_STREAM mode."); continue
+#             if video_frame_queue.full(): 
+#                 try: 
+#                     video_frame_queue.get_nowait(); video_frame_queue.task_done() 
+#                 except asyncio.QueueEmpty: pass
+#             await video_frame_queue.put(data)
+#     except WebSocketDisconnect: logger.info(f"WS-Upload: Client disconnected {websocket.client}")
+#     except Exception as e: logger.error(f"WS-Upload: Error for {websocket.client}: {e}", exc_info=True)
+
+@app.websocket("/ws/spots") 
+async def websocket_spots_endpoint_deferred(websocket: WebSocket): 
     if not spot_logic_module: await websocket.close(code=1011, reason="Spot logic not ready"); return
     await manager.connect(websocket) 
     try:
@@ -517,46 +531,22 @@ async def websocket_spots_endpoint_deferred(websocket: WebSocket):
                 }
         await websocket.send_text(json.dumps({"type":"all_spot_statuses", "data":current_statuses, "timestamp":time.time()},default=str))
         while True: 
-            try: 
-                await asyncio.wait_for(websocket.receive_text(), timeout=60) 
-            except asyncio.TimeoutError: 
-                await websocket.send_text(json.dumps({"type":"ping"}))
+            try: await asyncio.wait_for(websocket.receive_text(), timeout=60) 
+            except asyncio.TimeoutError: await websocket.send_text(json.dumps({"type":"ping"}))
     except WebSocketDisconnect: logger.info(f"WS-Spots: Client {websocket.client} disconnected")
     except Exception as e: logger.error(f"WS-Spots: Error for {websocket.client}: {e}", exc_info=True)
     finally: await manager.disconnect(websocket)
 
-@app.websocket("/ws/video_stream_upload")
-async def websocket_video_upload_endpoint_deferred(websocket: WebSocket):
-    global video_frame_queue 
-    await websocket.accept()
-    logger.info(f"WS-Upload: Client connected {websocket.client}")
-    try:
-        while True: 
-            data = await websocket.receive_text()
-            if VIDEO_SOURCE_TYPE_ENV_VAL != "WEBSOCKET_STREAM": 
-                logger.warning("WS-Upload: Frame recv but backend not in WEBSOCKET_STREAM mode."); continue
-            if video_frame_queue.full(): 
-                try: 
-                    video_frame_queue.get_nowait(); video_frame_queue.task_done() 
-                    logger.info("WS-Upload: video_frame_queue was full, discarded oldest frame.")
-                except asyncio.QueueEmpty: pass
-            await video_frame_queue.put(data)
-    except WebSocketDisconnect: logger.info(f"WS-Upload: Client disconnected {websocket.client}")
-    except Exception as e: logger.error(f"WS-Upload: Error for {websocket.client}: {e}", exc_info=True)
-
-@app.post("/api/register_fcm_token")
-async def register_fcm_token_api_deferred(payload: TokenRegistration, db: Session = Depends(get_db_session_dependency)):
-    if not DeviceToken_model: raise HTTPException(status_code=503, detail="DB components not ready for FCM token.")
+@app.post("/api/register_fcm_token") 
+async def register_fcm_token_api_deferred(payload: TokenRegistration, db: Session = Depends(get_db_session_dependency)): 
+    if not DeviceToken_model: raise HTTPException(status_code=503, detail="DB components not ready")
     logger.info(f"API: Register FCM token: {payload.token[:20]}...")
     try:
         existing_token = db.exec(select(DeviceToken_model).where(DeviceToken_model.token == payload.token)).first()
-        if existing_token: 
-            return {"message": "Token already registered."}
-        new_token = DeviceToken_model(token=payload.token, platform=payload.platform)
-        db.add(new_token); db.commit(); db.refresh(new_token) 
+        if existing_token: return {"message": "Token already registered."}
+        new_token = DeviceToken_model(token=payload.token, platform=payload.platform); db.add(new_token); db.commit(); db.refresh(new_token) 
         return {"message": "Token registered successfully."}
-    except Exception as e: 
-        db.rollback(); logger.error(f"FCM token reg error: {e}", exc_info=True); raise HTTPException(status_code=500, detail="Failed to register FCM token.")
+    except Exception as e: db.rollback(); logger.error(f"FCM token reg error: {e}", exc_info=True); raise HTTPException(status_code=500, detail="Failed to register FCM token.")
 
 # --- Static File Serving ---
 STATIC_FRONTEND_DIR = APP_DIR_PATH.parent / "frontend_build" 
@@ -574,4 +564,3 @@ app.add_middleware(
     CORSMiddleware, 
     allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
-#

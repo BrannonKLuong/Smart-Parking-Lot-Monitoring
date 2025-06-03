@@ -1,14 +1,15 @@
 # .github/workflows/backend-deploy.yml
-name: Deploy Backend to AWS App Runner & ECR
+name: Deploy Backend to AWS App Runner & ECR (HTTP Streaming Focus)
 
 on:
   push:
     branches:
       - main # Or your primary deployment branch
-    paths: # Optional: Only trigger if backend-related files change
+    paths: # Trigger if backend, this workflow, or key assets change
       - 'backend/**'
       - '.github/workflows/backend-deploy.yml'
-      - 'yolov8n.pt' # If this model file is at the root and changes
+      - 'yolov8n.pt' 
+      - 'ui/build/**' # Trigger if UI build changes, as it might be bundled
   workflow_dispatch: # Allows manual triggering
 
 permissions:
@@ -23,7 +24,7 @@ jobs:
       ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_BACKEND }} 
       APP_RUNNER_SERVICE_ARN: ${{ secrets.APP_RUNNER_SERVICE_ARN }}
       RDS_DATABASE_URL: ${{ secrets.RDS_DATABASE_URL }} 
-      # FIREBASE_SA_JSON_CONTENT is accessed directly in the python script step
+      # FIREBASE_SA_JSON_CONTENT is accessed directly in the python script step below
 
     steps:
       - name: Checkout code
@@ -41,12 +42,11 @@ jobs:
       - name: Set up Python for Alembic and Firebase script
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11' # Or your preferred Python version for scripts
+          python-version: '3.12' # Match your application's Python version
 
       - name: Install Alembic, DB driver, and necessary packages for scripts
         run: |
           python -m pip install --upgrade pip
-          # Ensure all packages needed by alembic/env.py and your firebase script are here
           pip install alembic psycopg2-binary python-dotenv sqlalchemy sqlmodel
         working-directory: ./backend 
 
@@ -58,7 +58,6 @@ jobs:
           else
             echo "No local backend/.env file found, proceeding."
           fi
-        # No working-directory needed here if paths are from root, or add it if preferred
 
       - name: Run Alembic Migrations
         shell: bash
@@ -68,14 +67,14 @@ jobs:
           PYTHONUNBUFFERED: "1" 
         run: |
           echo "Running Alembic migrations..."
-          echo "Target DATABASE_URL (from workflow env): $DATABASE_URL" # Use $DATABASE_URL for bash
+          echo "Target DATABASE_URL (from workflow env): $DATABASE_URL"
           alembic upgrade head
 
       - name: Create firebase-sa.json from secret using Python
         shell: python
         run: |
           import os
-          import json # For validation
+          import json 
           
           firebase_secret_content = os.environ.get('FIREBASE_SECRET_CONTENT_FOR_FILE')
           
@@ -83,36 +82,47 @@ jobs:
             print("::error::GitHub Secret FIREBASE_SA_JSON_CONTENT is not set or empty!")
             exit(1)
           
-          # Define the path where Dockerfile expects the file, relative to project root
-          # Dockerfile context is ./backend, and it COPIES secrets/firebase-sa.json
-          # So, this script needs to create ./backend/secrets/firebase-sa.json
-          secrets_dir = os.path.join(".", "backend", "secrets")
-          os.makedirs(secrets_dir, exist_ok=True)
-          file_path = os.path.join(secrets_dir, "firebase-sa.json")
+          # Path for the Docker build context (./backend)
+          secrets_dir_in_context = os.path.join(".", "backend", "secrets")
+          os.makedirs(secrets_dir_in_context, exist_ok=True)
+          file_path_in_context = os.path.join(secrets_dir_in_context, "firebase-sa.json")
           
           try:
-            # Attempt to parse it first to validate before writing
             json.loads(firebase_secret_content) 
-            print("Firebase secret content appears to be valid JSON.")
+            print("Firebase secret content appears to be valid JSON (validated by Python script).")
             
-            with open(file_path, 'w', encoding='utf-8') as f:
+            with open(file_path_in_context, 'w', encoding='utf-8') as f:
               f.write(firebase_secret_content)
-            print(f"Successfully wrote FIREBASE_SA_JSON_CONTENT to {file_path}")
-
-            # Optional: Verify by printing a snippet (be cautious with logging secrets)
-            # with open(file_path, 'r', encoding='utf-8') as f_check:
-            #     content_snippet = f_check.read(100) 
-            # print(f"Verification: First 100 chars of created file: {content_snippet}...")
+            print(f"Successfully wrote FIREBASE_SA_JSON_CONTENT to {file_path_in_context}")
 
           except json.JSONDecodeError as e_json:
             print(f"::error::The content of FIREBASE_SA_JSON_CONTENT secret is NOT valid JSON: {e_json}")
             print(f"Problematic secret starts with (first 200 chars): {firebase_secret_content[:200]}...") 
             exit(1)
           except Exception as e:
-            print(f"::error::Failed to write Firebase secret to file at {file_path}: {e}")
+            print(f"::error::Failed to write Firebase secret to file at {file_path_in_context}: {e}")
             exit(1)
         env:
           FIREBASE_SECRET_CONTENT_FOR_FILE: ${{ secrets.FIREBASE_SA_JSON_CONTENT }}
+
+      - name: Prepare frontend build for backend Docker image (Optional)
+        # This step assumes your 'npm run build' (from frontend-deploy.yml or a similar process)
+        # outputs to './ui/build/'. It copies these assets into the backend's Docker build context.
+        # Your Dockerfile then needs to COPY from 'frontend_build_source_for_docker'
+        # to '/app/frontend_build'.
+        run: |
+          echo "Preparing frontend build for Docker context..."
+          UI_BUILD_SOURCE_PATH="./ui/build" # Adjust if your React build output is elsewhere (e.g. "./static")
+          DOCKER_CONTEXT_UI_TARGET="./backend/frontend_build_source_for_docker"
+
+          if [ -d "$UI_BUILD_SOURCE_PATH" ] && [ "$(ls -A $UI_BUILD_SOURCE_PATH)" ]; then
+            echo "Copying frontend build from $UI_BUILD_SOURCE_PATH to $DOCKER_CONTEXT_UI_TARGET/"
+            mkdir -p "$DOCKER_CONTEXT_UI_TARGET"
+            cp -R $UI_BUILD_SOURCE_PATH/* "$DOCKER_CONTEXT_UI_TARGET/"
+            echo "Frontend build files copied into Docker context."
+          else
+            echo "::warning::Frontend build directory $UI_BUILD_SOURCE_PATH is empty or does not exist. SPA serving from backend might fail if configured."
+          fi
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -122,28 +132,19 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build and push Docker image to ECR
-        id: build-image # Added id to reference image_uri later if needed
+        id: build-image 
         uses: docker/build-push-action@v5
         with:
-          context: ./backend # Build context is the ./backend directory
-          # Dockerfile path is implicitly backend/Dockerfile due to context
+          context: ./backend 
+          # Dockerfile is backend/Dockerfile relative to context
           push: true
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
-          # Example for multi-platform if needed, otherwise remove 'platforms'
-          # platforms: linux/amd64 # ,linux/arm64 
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Update App Runner Service
-        # This step assumes your App Runner service is already created.
-        # It updates the service to use the new image pushed to ECR.
-        # Ensure your IAM_ROLE_TO_ASSUME has apprunner:UpdateService permissions.
-        # Environment variables for App Runner should be configured in the App Runner console
-        # or via your IaC (template.yaml), including DATABASE_URL, FIREBASE_CRED_PATH, VIDEO_SOURCE_TYPE etc.
-        # This CLI command primarily updates the image source.
-        # If you need to update environment variables via CLI, it's more complex and often better managed
-        # through the App Runner console or IaC for the service's runtime configuration.
         run: |
+          echo "Updating App Runner service ${{ env.APP_RUNNER_SERVICE_ARN }} with image ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}"
           aws apprunner update-service \
             --service-arn ${{ env.APP_RUNNER_SERVICE_ARN }} \
             --source-configuration '{
@@ -155,23 +156,4 @@ jobs:
                 "AutoDeploymentsEnabled": false 
             }' \
             --region ${{ env.AWS_REGION }}
-        # Note on AuthenticationConfiguration for ECR access by App Runner:
-        # If your App Runner service needs an ECR access role (APP_RUNNER_ECR_ACCESS_ROLE_ARN),
-        # that's typically part of the --source-configuration.ImageRepository.AuthenticationConfiguration.AccessRoleArn
-        # or set when creating/configuring the service in the console/IaC.
-        # The update-service command might overwrite parts of source-configuration, so be careful.
-        # Often, if ECR and App Runner are in the same account, and the service was created with console
-        # defaults or an appropriate instance role, explicit ECR access role in update-service might not be needed.
-        # If it IS needed, the JSON for --source-configuration would be more complex.
-        # Example (if you need to specify AccessRoleArn):
-        # --source-configuration '{
-        #     "ImageRepository": {
-        #         "ImageIdentifier": "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}",
-        #         "ImageRepositoryType": "ECR",
-        #         "ImageConfiguration": { "Port": "8000" }
-        #     },
-        #     "AuthenticationConfiguration": {
-        #         "AccessRoleArn": "${{ secrets.APP_RUNNER_ECR_ACCESS_ROLE_ARN }}"
-        #     },
-        #     "AutoDeploymentsEnabled": false
-        # }'
+          echo "App Runner service update command issued."
