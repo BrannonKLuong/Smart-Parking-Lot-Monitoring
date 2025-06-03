@@ -452,8 +452,8 @@ async def save_spots_config_v2_deferred(payload: SpotsUpdateRequest, db: Session
     default_camera_id = "default_camera"
     try:
         statement_existing = select(ParkingSpotConfig_model).where(ParkingSpotConfig_model.camera_id == default_camera_id)
-        existing_spot_configs_db = db.exec(statement_existing).all()
-        existing_spots_map = {str(config.spot_label): config for config in existing_spot_configs_db}
+        existing_spot_configs_db = db.execute(statement_existing).all()
+        existing_spots_map = {str(config_row[0].spot_label): config_row[0] for config_row in existing_spot_configs_db}
         incoming_spot_labels = set(); response_spots_data = []
         for spot_in_model in payload.spots:
             label = str(spot_in_model.id); incoming_spot_labels.add(label)
@@ -542,7 +542,7 @@ async def register_fcm_token_api_deferred(payload: TokenRegistration, db: Sessio
     if not DeviceToken_model: raise HTTPException(status_code=503, detail="DB components not ready")
     logger.info(f"API: Register FCM token: {payload.token[:20]}...")
     try:
-        existing_token = db.exec(select(DeviceToken_model).where(DeviceToken_model.token == payload.token)).first()
+        existing_token = db.execute(select(DeviceToken_model).where(DeviceToken_model.token == payload.token)).first()
         if existing_token: return {"message": "Token already registered."}
         new_token = DeviceToken_model(token=payload.token, platform=payload.platform); db.add(new_token); db.commit(); db.refresh(new_token) 
         return {"message": "Token registered successfully."}
