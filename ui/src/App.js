@@ -32,13 +32,13 @@ export default function App() {
   // getWebSocketUrl is no longer strictly needed by WebcamStreamer if it only uses HTTP POST
   // but App.js might still use it if other WebSockets are present (e.g., for /ws/spots if implemented)
   // For now, we can leave it, WebcamStreamer just won't use its output.
-  const getWebSocketUrl = useCallback(() => {
-    if (!API_BASE_URL) { console.error("[App.js] API_BASE_URL is not set."); return null; }
-    if (API_BASE_URL.startsWith('https://')) return `wss://${API_BASE_URL.substring(8)}/ws/video_stream_upload`;
-    if (API_BASE_URL.startsWith('http://')) return `ws://${API_BASE_URL.substring(7)}/ws/video_stream_upload`;
-    console.error("[App.js] Cannot determine WebSocket protocol from API_BASE_URL:", API_BASE_URL);
-    return null;
-  }, []); 
+  // const getWebSocketUrl = useCallback(() => {
+  //   if (!API_BASE_URL) { console.error("[App.js] API_BASE_URL is not set."); return null; }
+  //   if (API_BASE_URL.startsWith('https://')) return `wss://${API_BASE_URL.substring(8)}/ws/video_stream_upload`;
+  //   if (API_BASE_URL.startsWith('http://')) return `ws://${API_BASE_URL.substring(7)}/ws/video_stream_upload`;
+  //   console.error("[App.js] Cannot determine WebSocket protocol from API_BASE_URL:", API_BASE_URL);
+  //   return null;
+  // }, []); 
   // const webcamWebSocketUrl = getWebSocketUrl(); // This will be unused by HTTP WebcamStreamer
 
   const fetchSpots = useCallback(() => {
