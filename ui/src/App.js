@@ -39,7 +39,7 @@ export default function App() {
     console.error("[App.js] Cannot determine WebSocket protocol from API_BASE_URL:", API_BASE_URL);
     return null;
   }, []); 
-  const webcamWebSocketUrl = getWebSocketUrl(); // This will be unused by HTTP WebcamStreamer
+  // const webcamWebSocketUrl = getWebSocketUrl(); // This will be unused by HTTP WebcamStreamer
 
   const fetchSpots = useCallback(() => {
     fetch(API_SPOTS_GET_ROUTE) 
