@@ -157,3 +157,4 @@ jobs:
             }' \
             --region ${{ env.AWS_REGION }}
           echo "App Runner service update command issued."
+#
