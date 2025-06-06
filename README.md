@@ -1,14 +1,21 @@
 # Smart Parking Lot Monitoring System
 ![Smart Parking Lot Demo](assets/smart-parking-lot-demo.gif)
+
+## Deployment Status: Deployed on AWS
+This project has been fully deployed to the AWS cloud, utilizing App Runner, S3, CloudFront, and RDS. The live environment is not maintained 24/7 to manage operational costs, but the system is fully configured for automated deployment via the CI/CD pipeline.
+
 ## Project Description
 
-This project is a Smart Parking Lot Monitoring System that utilizes video analysis to detect the occupancy status of parking spots. It is built with a Dockerized architecture, featuring a Python backend for video processing and object detection, and a React frontend for a user-friendly interface to visualize the parking lot status and manage spot configurations. The backend also includes basic functionality for communicating with Android devices via Firebase Cloud Messaging (FCM).
+This project is a Smart Parking Lot Monitoring System that utilizes video analysis to detect the occupancy status of parking spots. It is built with a Dockerized architecture and now fully deployed to AWS. Featuring a Python backend for video processing and object detection, and a React frontend for a user-friendly interface to visualize the parking lot status and manage spot configurations. The backend also includes basic functionality for communicating with Android devices via Firebase Cloud Messaging (FCM).
 
 The primary goal is to provide real-time information about parking spot availability and notify users when spots become free.
 
 ## Architecture and Technologies
 
-The system employs a microservices-like architecture orchestrated with Docker Compose:
+The system is deployed on AWS and can be run locally for development using Docker Compose.
+
+* **Cloud Architecture:**
+   * The application is deployed on AWS, with the backend running on App Runner, the frontend hosted on S3 and served via CloudFront, and the database managed by RDS.
 
 * **Backend (`backend/`):**
     * Built with **Python** using the **FastAPI** framework.
