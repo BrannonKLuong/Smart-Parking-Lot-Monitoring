@@ -38,7 +38,7 @@ The system is deployed on AWS and can be run locally for development using Docke
     * Used to containerize the backend and its dependencies for consistent deployment on AWS App Runner and for easy local development setup.
 
 ## Features
-
+* **Client-Side Video Streaming:** Utilizes the user's local webcam to capture and stream frames to the backend over HTTP, enabling live analysis without requiring a dedicated camera source.
 * Real-time video feed display in the web UI.
 * Automatic detection of vehicles and parking spot occupancy using YOLOv8.
 * Visual representation of parking spots and their status (occupied/free) on the video feed in the web UI.
