@@ -89,3 +89,8 @@ While the project is deployed, you can still run it locally for development and 
         docker-compose up --build
         ```
     * This command will start the FastAPI backend, the PostgreSQL database, and serve the React frontend build if configured in your `docker-compose.yml`.
+
+5.  **Access the Application**:
+
+    * The web UI will be available at `http://localhost:8000` (or the port you have configured for the backend service).
+    * To start the video analysis, you will need to grant browser permission for the site to access your camera.
