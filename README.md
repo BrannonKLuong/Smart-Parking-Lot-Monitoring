@@ -47,7 +47,7 @@ The system is deployed on AWS and can be run locally for development using Docke
 * Web-based editor to add, remove, and resize parking spot bounding boxes.
 * Backend endpoint for Android devices to register FCM tokens.
 * Basic Android app emulator functionality showing spot counts and updates (based on user commentary).
-* **The system architecture is designed to handle live video streams (RTSP/RTMP), and this capability has been tested in previous iterations. The current default configuration uses a local video file (`test_video.mov`) for faster development and testing cycles.**
+* Automated CI/CD Pipeline: The project is integrated with GitHub Actions to automatically build, test (migrations), and deploy any changes to AWS.
 
 ## Progress and Current Status
 
