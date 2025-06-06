@@ -6,7 +6,7 @@ This project has been fully deployed to the AWS cloud, utilizing App Runner, S3,
 
 ## Project Description
 
-This project is a Smart Parking Lot Monitoring System that utilizes video analysis to detect the occupancy status of parking spots. It is built with a Dockerized architecture and now fully deployed to AWS. Featuring a Python backend for video processing and object detection, and a React frontend for a user-friendly interface to visualize the parking lot status and manage spot configurations. The backend also includes basic functionality for communicating with Android devices via Firebase Cloud Messaging (FCM).
+This project is a Smart Parking Lot Monitoring System that utilizes video analysis to detect the occupancy status of parking spots. In the demo, these frames are streamed from the user's local webcam to the backend via HTTP for real-time processing. It is built with a Dockerized architecture and now fully deployed to AWS. Featuring a Python backend for video processing and object detection, and a React frontend for a user-friendly interface to visualize the parking lot status and manage spot configurations. The backend also includes basic functionality for communicating with Android devices via Firebase Cloud Messaging (FCM).
 
 The primary goal is to provide real-time information about parking spot availability and notify users when spots become free.
 
