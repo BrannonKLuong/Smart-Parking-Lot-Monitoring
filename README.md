@@ -34,10 +34,8 @@ The system is deployed on AWS and can be run locally for development using Docke
 * **Database:**
     * **PostgreSQL** running in a Docker container.
     * Stores system data, including vacancy events and registered Android device tokens.
-* **RTSP Server (`rtsp-simple-server.yml`):**
-    * Uses `aler9/rtsp-simple-server` to potentially handle video streams from IP cameras.
 * **Docker:**
-    * Used to containerize the backend, database, and RTSP server for easy setup and deployment.
+    * Used to containerize the backend and its dependencies for consistent deployment on AWS App Runner and for easy local development setup.
 
 ## Features
 
