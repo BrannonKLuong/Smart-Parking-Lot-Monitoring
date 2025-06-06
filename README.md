@@ -51,79 +51,44 @@ The system is deployed on AWS and can be run locally for development using Docke
 
 ## Progress and Current Status
 
-This project is currently in active development. Significant progress has been made on the core functionality:
-
-* **Docker Environment:** Successfully configured and running containers for the backend and database.
-* **Video Processing:** The backend successfully processes the video file (`test_video.mov`) and serves a stream to the frontend.
-* **Frontend Display:** The React frontend correctly displays the video feed and individual spot tiles with accurate status (occupied/free) and counters. Notifications for spot changes are displayed and clear after a duration.
-* **Spot Configuration:** The web editor allows for adding, removing, and resizing parking spots, with changes persisted (though spot ID assignment has a known behavior - see Outstanding Issues).
-* **Android Communication:** An API endpoint exists for Android devices to register FCM tokens, and the backend uses the Firebase Admin SDK.
-* **Database Integration:** Vacancy events are being recorded in the PostgreSQL database.
+The project has reached a stable, feature-complete state. The core functionalities for video processing, frontend visualization, spot configuration, and database integration have been successfully implemented. The entire application has been deployed and validated on AWS, with an automated CI/CD pipeline in place.
 
 
-## Future Goals
+## Future Enhancements
 
-* **Integrate Live Video Source via IP:** Transition the system to primarily process a live video stream (e.g., from an RTSP IP camera) for real-world application, leveraging the existing architectural capability.
-* **Android Notifications:** Implement the full logic for sending push notifications to registered Android devices when a parking spot becomes available.
-* **Android Video Feed:** Explore methods to display the same video feed processed by the backend within the Android application.
-* **Improved Accuracy:** Fine-tune the YOLOv8 model or explore other detection methods to improve accuracy in various lighting and weather conditions.
-* **Deployment:** Prepare the application for deployment to a cloud platform.
+* **Performance Optimization:** Refine the video processing pipeline and App Runner configuration to reduce latency and improve responsiveness.
+* **User Authentication:** Implement an authentication system for administrative features like spot editing.
+* **Advanced Analytics:** Develop a dashboard to show historical parking data, peak hours, and usage trends.
+* **Multi-Camera Support:** Extend the architecture to manage and process feeds from multiple cameras simultaneously.
+  
+## Local Development Setup
 
-## Setup and Installation
+While the project is deployed, you can still run it locally for development and testing.
 
-1.  **Prerequisites:** Ensure you have Docker and Docker Compose installed. You will also need Node.js and npm (or yarn) for the frontend build.
-2.  **Clone the Repository:**
+1.  **Prerequisites**:
+    * Docker and Docker Compose
+    * Node.js and npm
+    * Python 3.12
+
+2.  **Clone the Repository**:
     ```bash
-    git clone https://github.com/BrannonKLuong/Smart-Parking-Lot-Monitoring
+    git clone [https://github.com/BrannonKLuong/Smart-Parking-Lot-Monitoring](https://github.com/BrannonKLuong/Smart-Parking-Lot-Monitoring)
     cd Smart-Parking-Lot-Monitoring
     ```
-3.  **Configure Environment Variables:** Create a `.env` file at the root directory and potentially in the `backend/` directory based on your project's needs.
-4.  **Configure Firebase:** Obtain a Firebase service account key (`firebase-sa.json`) and place it in a secure location, ideally outside the publicly accessible parts of your repository (as configured in your `docker-compose.yml` secrets volume). Update the `FIREBASE_CRED` environment variable to point to this file.
-5.  **Build Frontend:** Navigate to the `ui` directory and build the React application.
-    ```bash
-    cd ui
-    npm install # or yarn install
-    npm run build # or yarn build
-    ```
-6.  **Build and Run with Docker Compose:** Navigate back to the root directory and run Docker Compose.
-    ```bash
-    cd ..
-    docker-compose up --build
-    ```
-7.  **Access the Web UI:** Once the containers are running, the frontend should be accessible at `http://localhost:8000`.
 
+3.  **Configure Environment**:
+    * Create a `.env` file in the root of the project.
+    * Populate it with necessary variables like `DB_USER`, `DB_PASSWORD`, and `DB_NAME`.
+    * The `DATABASE_URL` for local development should point to the Dockerized Postgres service (e.g., `postgresql://user:password@db:5432/dbname`).
+    * Create a `backend/secrets` directory.
+    * Place your Firebase service account key (`firebase-sa.json`) inside `backend/secrets`.
 
-## Usage
+4.  **Run with Docker Compose**:
+    * From the root directory, build and run all services:
+        ```bash
+        docker-compose up --build
+        ```
+    * This command will start the FastAPI backend, the PostgreSQL database, and serve the React frontend build if configured in your `docker-compose.yml`.
 
-1.  **Start Backend and Database Containers:**
-    Navigate to the root directory of the project and run:
-    ```bash
-    docker-compose up -d --build db rtsp backend
-    ```
-    This starts the database, RTSP server, and backend containers in detached mode.
-2.  **Activate Backend Python Environment:**
-    Navigate to the `backend` directory and activate your Python virtual environment:
-    ```bash
-    cd backend
-    # On Windows PowerShell:
-    .\.venv\Scripts\Activate.ps1
-    # On macOS/Linux:
-    source .venv/bin/activate
-    ```
-3.  **Run the Backend Application:**
-    From within the activated virtual environment in the `backend` directory, run the FastAPI application:
-    ```bash
-    uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
-    ```
-4.  **Start the Frontend Development Server:**
-    Open a *new* terminal window, navigate to the `ui` directory, and start the React development server:
-    ```bash
-    cd ui
-    npm start # or yarn start
-    ```
-5.  **Access the Web UI:**
-    Open your web browser and go to:
-    ```
-    http://localhost:3000
-    ```
-    You should see the parking lot monitoring interface. The frontend running on port 3000 will communicate with the backend running (either in Docker or directly via uvicorn) on port 8000.
+5.  **Access the Application**:
+    * The web UI will be available at `http://localhost:8000` (or the port you have configured for the backend service).
